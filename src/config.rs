@@ -77,6 +77,14 @@ pub trait StarkGenericConfig {
     /// Returns a reference to the PCS.
     fn pcs(&self) -> &Self::Pcs;
 
+    /// 1 when the PCS randomizes commitments (zero-knowledge: every committed
+    /// trace is doubled with random rows and a random FRI-batch polynomial is
+    /// added), 0 otherwise. Drives domain sizes, quotient chunk counts and the
+    /// opening round layout in the prover and verifier.
+    fn is_zk(&self) -> usize {
+        <Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::ZK as usize
+    }
+
     /// Returns a fresh challenger.
     ///
     /// # Transcript contract

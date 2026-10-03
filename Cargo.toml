@@ -12,6 +12,7 @@ rust-version = "1.91"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 bincode = { version = "2", features = ["serde"] }
+rand = "0.10"
 p3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "e9d75614dd6816f9b5dbb4413c69be63536efd64" }
 p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "e9d75614dd6816f9b5dbb4413c69be63536efd64" }
 p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "e9d75614dd6816f9b5dbb4413c69be63536efd64" }
@@ -30,7 +31,6 @@ p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "e9d75614dd6816f9b
 [dev-dependencies]
 criterion = "0.5"
 p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "e9d75614dd6816f9b5dbb4413c69be63536efd64" }
-rand = "0.10"
 
 [[bench]]
 name = "multi_stark"

@@ -11,9 +11,11 @@ use p3_challenger::{HashChallenger, SerializingChallenger64};
 use p3_commit::{ExtensionMmcs, Pcs as PcsTrait};
 use p3_dft::Radix2DitParallel;
 use p3_field::{ExtensionField, Field, TwoAdicField, extension::BinomialExtensionField};
-use p3_fri::{FriParameters as InnerFriParameters, TwoAdicFriPcs};
+use p3_fri::{FriParameters as InnerFriParameters, HidingFriPcs, TwoAdicFriPcs};
 use p3_goldilocks::Goldilocks;
-use p3_merkle_tree::MerkleTreeMmcs;
+use p3_merkle_tree::{MerkleTreeHidingMmcs, MerkleTreeMmcs};
+use rand::Rng;
+use std::sync::{Arc, Mutex};
 use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
 
 pub type Val = Goldilocks;
@@ -101,6 +103,136 @@ impl StarkGenericConfig for GoldilocksBlake3Config {
     }
 }
 
+/// A `Clone`-able handle to one shared random generator. Plonky3's hiding
+/// MMCS and PCS each take an owned `R: Clone`; cloning a seeded generator
+/// would give them identical streams, so every clone of this handle draws
+/// from the same underlying generator instead.
+#[derive(Debug)]
+pub struct SharedRng<R>(Arc<Mutex<R>>);
+
+impl<R> Clone for SharedRng<R> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<R: Rng> SharedRng<R> {
+    pub fn new(rng: R) -> Self {
+        Self(Arc::new(Mutex::new(rng)))
+    }
+}
+
+impl<R: Rng> rand::TryRng for SharedRng<R> {
+    type Error = core::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(self.0.lock().expect("rng poisoned").next_u32())
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(self.0.lock().expect("rng poisoned").next_u64())
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        self.0.lock().expect("rng poisoned").fill_bytes(dst);
+        Ok(())
+    }
+}
+
+impl<R: rand::CryptoRng> rand::TryCryptoRng for SharedRng<R> {}
+
+/// Number of random codewords the hiding PCS appends to every commitment
+/// (the value every Plonky3 zero-knowledge configuration uses).
+pub const NUM_RANDOM_CODEWORDS: usize = 4;
+
+/// Salt elements per Merkle leaf in the hiding MMCS (4 x 64 bits).
+pub const SALT_ELEMS: usize = 4;
+
+pub type HidingMmcs<R> = MerkleTreeHidingMmcs<
+    Val,
+    u8,
+    SerializingHasher<Blake3>,
+    Blake3CompressionFunction,
+    R,
+    2,
+    32,
+    SALT_ELEMS,
+>;
+pub type HidingExtMmcs<R> = ExtensionMmcs<Val, ExtVal, HidingMmcs<R>>;
+pub type HidingPcs<R> = HidingFriPcs<Val, Dft, HidingMmcs<R>, HidingExtMmcs<R>, R>;
+
+/// The zero-knowledge variant of [`GoldilocksBlake3Config`]: salted Merkle
+/// leaves and Plonky3's `HidingFriPcs`, which interleaves every committed
+/// trace with random rows, appends random columns, randomizes the quotient
+/// chunks and adds a random FRI-batch polynomial. The prover and verifier
+/// select the zero-knowledge protocol variant through
+/// [`StarkGenericConfig::is_zk`].
+///
+/// `rng` seeds all blinding; use an OS-backed generator in production.
+pub struct GoldilocksBlake3ZkConfig<R> {
+    pcs: HidingPcs<R>,
+    challenger_seed: Vec<u8>,
+    max_log_degree: usize,
+    max_quotient_degree: usize,
+}
+
+impl<R: Rng + Clone + Send + Sync> GoldilocksBlake3ZkConfig<R> {
+    pub fn new(
+        commitment_parameters: CommitmentParameters,
+        fri_parameters: FriParameters,
+        rng: R,
+    ) -> Self {
+        let pcs = new_hiding_pcs(commitment_parameters, fri_parameters, rng);
+        // A distinct tag: zero-knowledge transcripts must never collide with
+        // plain ones even under identical parameters.
+        let mut challenger_seed = b"multi-stark/v0-zk".to_vec();
+        for parameter in [
+            commitment_parameters.log_blowup,
+            commitment_parameters.cap_height,
+            fri_parameters.log_final_poly_len,
+            fri_parameters.max_log_arity,
+            fri_parameters.num_queries,
+            fri_parameters.commit_proof_of_work_bits,
+            fri_parameters.query_proof_of_work_bits,
+        ] {
+            let parameter = u64::try_from(parameter).expect("parameter exceeds u64");
+            challenger_seed.extend_from_slice(&parameter.to_le_bytes());
+        }
+        // The hiding PCS doubles every committed matrix, so the extended trace
+        // needs one more bit of two-adicity than the base trace.
+        let max_log_degree = Val::TWO_ADICITY - commitment_parameters.log_blowup - 1;
+        let max_quotient_degree = 1 << commitment_parameters.log_blowup;
+        Self {
+            pcs,
+            challenger_seed,
+            max_log_degree,
+            max_quotient_degree,
+        }
+    }
+}
+
+impl<R: Rng + Clone + Send + Sync> StarkGenericConfig for GoldilocksBlake3ZkConfig<R> {
+    type Pcs = HidingPcs<R>;
+    type Challenge = ExtVal;
+    type Challenger = Challenger;
+
+    fn pcs(&self) -> &HidingPcs<R> {
+        &self.pcs
+    }
+
+    fn initialise_challenger(&self) -> Challenger {
+        Challenger::from_hasher(self.challenger_seed.clone(), Blake3)
+    }
+
+    fn max_log_degree(&self) -> usize {
+        self.max_log_degree
+    }
+
+    fn max_quotient_degree(&self) -> usize {
+        self.max_quotient_degree
+    }
+}
+
 /// Parameters of the polynomial commitment: Reed-Solomon rate and Merkle
 /// tree shape.
 #[derive(Clone, Copy)]
@@ -155,6 +287,28 @@ fn new_pcs(commitment_parameters: CommitmentParameters, fri_parameters: FriParam
     };
     let dft = Dft::default();
     Pcs::new(dft, val_mmcs, inner_parameters)
+}
+
+fn new_hiding_pcs<R: Rng + Clone>(
+    commitment_parameters: CommitmentParameters,
+    fri_parameters: FriParameters,
+    rng: R,
+) -> HidingPcs<R> {
+    let byte_hash = Blake3;
+    let field_hash = SerializingHasher::new(byte_hash);
+    let compress = Blake3CompressionFunction::new(byte_hash);
+    let val_mmcs = HidingMmcs::new(field_hash, compress, commitment_parameters.cap_height, rng.clone());
+    let mmcs = ExtensionMmcs::new(val_mmcs.clone());
+    let inner_parameters = InnerFriParameters {
+        log_blowup: commitment_parameters.log_blowup,
+        log_final_poly_len: fri_parameters.log_final_poly_len,
+        max_log_arity: fri_parameters.max_log_arity,
+        num_queries: fri_parameters.num_queries,
+        commit_proof_of_work_bits: fri_parameters.commit_proof_of_work_bits,
+        query_proof_of_work_bits: fri_parameters.query_proof_of_work_bits,
+        mmcs,
+    };
+    HidingPcs::new(Dft::default(), val_mmcs, inner_parameters, NUM_RANDOM_CODEWORDS, rng)
 }
 
 #[cfg(test)]

@@ -190,6 +190,8 @@ pub struct Commitments<Com> {
     pub stage_2_trace: Com,
     /// Commitment to the quotient polynomial chunks.
     pub quotient_chunks: Com,
+    /// Commitment to the random FRI-batch polynomial (zero-knowledge only).
+    pub random: Option<Com>,
 }
 
 /// A STARK proof for a multi-circuit system.
@@ -207,6 +209,8 @@ pub struct Proof<SC: StarkGenericConfig> {
     pub preprocessed_opened_values: Option<OpenedValuesForRound<SC::Challenge>>,
     pub stage_1_opened_values: OpenedValuesForRound<SC::Challenge>,
     pub stage_2_opened_values: OpenedValuesForRound<SC::Challenge>,
+    /// Openings of the random FRI-batch polynomial at ζ (zero-knowledge only).
+    pub random_opened_values: Option<OpenedValuesForRound<SC::Challenge>>,
 }
 
 impl<SC: StarkGenericConfig> Proof<SC> {
@@ -256,6 +260,7 @@ where
     ) -> Proof<SC> {
         // initialize pcs and challenger
         let pcs = self.config.pcs();
+        let is_zk = self.config.is_zk();
         let mut challenger = self.config.initialise_challenger();
 
         // Bind the system shape into the transcript. The protocol parameters
@@ -269,9 +274,11 @@ where
         let evaluations = witness.traces.into_iter().map(|trace| {
             let degree = trace.height();
             let log_degree = log2_strict_usize(degree);
-            let trace_domain = pcs.natural_domain_for_degree(degree);
+            // Under zero-knowledge the PCS interleaves every trace with random
+            // rows, so the committed matrix lives on a domain twice the size.
+            let ext_trace_domain = pcs.natural_domain_for_degree(degree << is_zk);
             log_degrees.push(log_degree);
-            (trace_domain, trace)
+            (ext_trace_domain, trace)
         });
         let (stage_1_trace_commit, stage_1_trace_data) = pcs.commit(evaluations);
         drop(_g);
@@ -283,9 +290,13 @@ where
 
         // Observe the traces' heights. This binds the proof to specific domain
         // sizes; the verifier reads these from the (untrusted) proof, so they
-        // must influence every subsequent challenge.
+        // must influence every subsequent challenge. Under zero-knowledge the
+        // extended height is bound as well.
         for log_degree in &log_degrees {
             challenger.observe(Val::<SC>::from_usize(*log_degree));
+            if is_zk == 1 {
+                challenger.observe(Val::<SC>::from_usize(*log_degree + 1));
+            }
         }
 
         // Observe the claims, length-prefixed so that distinct claim
@@ -328,8 +339,8 @@ where
         let _g = tracing::info_span!("stark/stage2_commit").entered();
         let evaluations = stage_2_traces.into_iter().map(|trace| {
             let degree = trace.height();
-            let trace_domain = pcs.natural_domain_for_degree(degree);
-            (trace_domain, trace.flatten_to_base())
+            let ext_trace_domain = pcs.natural_domain_for_degree(degree << is_zk);
+            (ext_trace_domain, trace.flatten_to_base())
         });
         let (stage_2_trace_commit, stage_2_trace_data) = pcs.commit(evaluations);
         drop(_g);
@@ -351,71 +362,92 @@ where
         let _g = tracing::info_span!("stark/quotient").entered();
         debug_assert_eq!(intermediate_accumulators.len(), self.circuits.len());
         debug_assert_eq!(log_degrees.len(), self.circuits.len());
-        let mut quotient_degrees = vec![];
-        let quotient_evaluations = self
+        let mut num_quotient_chunks = vec![];
+        let mut quotient_ldes = vec![];
+        for (idx, ((circuit, log_degree), next_acc)) in self
             .circuits
             .iter()
             .zip(log_degrees.iter())
             .zip(intermediate_accumulators.iter())
             .enumerate()
-            .flat_map(|(idx, ((circuit, log_degree), next_acc))| {
-                let air = &circuit.air;
-                let quotient_degree = circuit.quotient_degree();
-                let log_quotient_degree = log2_strict_usize(quotient_degree);
-                let trace_domain = pcs.natural_domain_for_degree(1 << log_degree);
-                let quotient_domain =
-                    trace_domain.create_disjoint_domain(1 << (log_degree + log_quotient_degree));
-                let preprocessed_trace_on_quotient_domain = key
-                    .preprocessed_data
-                    .as_ref()
-                    .zip(self.preprocessed_indices[idx])
-                    .map(|(preprocessed_trace_data, preprocessed_idx)| {
-                        pcs.get_evaluations_on_domain(
-                            preprocessed_trace_data,
-                            preprocessed_idx,
-                            quotient_domain,
-                        )
-                    });
-                let stage_1_trace_on_quotient_domain =
-                    pcs.get_evaluations_on_domain(&stage_1_trace_data, idx, quotient_domain);
-                let stage_2_trace_on_quotient_domain =
-                    pcs.get_evaluations_on_domain(&stage_2_trace_data, idx, quotient_domain);
-                // compute the quotient values which are elements of the extension field and flatten it to the base field
-                let public_values: [Val<SC>; 0] = [];
-                let stage_2_public_values = [
-                    lookup_argument_challenge,
-                    fingerprint_challenge,
-                    acc,
-                    *next_acc,
-                ];
-                let quotient_values = quotient_values::<SC, _>(
-                    air,
-                    &public_values,
-                    &stage_2_public_values,
-                    trace_domain,
-                    quotient_domain,
-                    &preprocessed_trace_on_quotient_domain,
-                    &stage_1_trace_on_quotient_domain,
-                    &stage_2_trace_on_quotient_domain,
-                    constraint_challenge,
-                    circuit.constraint_count,
-                );
-                let quotient_flat =
-                    RowMajorMatrix::new_col(quotient_values).flatten_to_base::<Val<SC>>();
-                // note that, in general, the quotients have a degree that is greater than the trace polynomials,
-                // so for FRI to work so we must split into smaller polynomials
-                let quotient_sub_evaluations =
-                    quotient_domain.split_evals(quotient_degree, quotient_flat);
-                let quotient_sub_domains = quotient_domain.split_domains(quotient_degree);
-                // need to save the quotient degree for later
-                quotient_degrees.push(quotient_degree);
-                acc = *next_acc;
-                quotient_sub_domains
-                    .into_iter()
-                    .zip(quotient_sub_evaluations)
-            });
-        let (quotient_commit, quotient_data) = pcs.commit(quotient_evaluations);
+        {
+            let air = &circuit.air;
+            let quotient_degree = circuit.quotient_degree(is_zk);
+            let num_chunks = circuit.num_quotient_chunks(is_zk);
+            let log_quotient_degree = log2_strict_usize(quotient_degree);
+            // Constraints, selectors and the vanishing polynomial live on the
+            // base trace domain; commitments and the quotient domain on the
+            // extended one.
+            let trace_domain = pcs.natural_domain_for_degree(1 << log_degree);
+            let ext_trace_domain = pcs.natural_domain_for_degree(1 << (log_degree + is_zk));
+            let quotient_domain = ext_trace_domain
+                .create_disjoint_domain(1 << (log_degree + is_zk + log_quotient_degree));
+            let preprocessed_trace_on_quotient_domain = key
+                .preprocessed_data
+                .as_ref()
+                .zip(self.preprocessed_indices[idx])
+                .map(|(preprocessed_trace_data, preprocessed_idx)| {
+                    pcs.get_evaluations_on_domain_no_random(
+                        preprocessed_trace_data,
+                        preprocessed_idx,
+                        quotient_domain,
+                    )
+                });
+            let stage_1_trace_on_quotient_domain =
+                pcs.get_evaluations_on_domain(&stage_1_trace_data, idx, quotient_domain);
+            let stage_2_trace_on_quotient_domain =
+                pcs.get_evaluations_on_domain(&stage_2_trace_data, idx, quotient_domain);
+            // compute the quotient values which are elements of the extension field and flatten it to the base field
+            let public_values: [Val<SC>; 0] = [];
+            let stage_2_public_values = [
+                lookup_argument_challenge,
+                fingerprint_challenge,
+                acc,
+                *next_acc,
+            ];
+            let quotient_values = quotient_values::<SC, _>(
+                air,
+                &public_values,
+                &stage_2_public_values,
+                trace_domain,
+                quotient_domain,
+                &preprocessed_trace_on_quotient_domain,
+                &stage_1_trace_on_quotient_domain,
+                &stage_2_trace_on_quotient_domain,
+                constraint_challenge,
+                circuit.constraint_count,
+            );
+            let quotient_flat =
+                RowMajorMatrix::new_col(quotient_values).flatten_to_base::<Val<SC>>();
+            // note that, in general, the quotients have a degree that is greater than the trace polynomials,
+            // so for FRI to work so we must split into smaller polynomials
+            let chunk_evaluations = quotient_domain.split_evals(num_chunks, quotient_flat);
+            let chunk_domains = quotient_domain.split_domains(num_chunks);
+            // The PCS computes the chunk LDEs (randomized under zero-knowledge)
+            // so that all chunks can be committed in one batch below.
+            quotient_ldes.extend(
+                pcs.get_quotient_ldes(chunk_domains.into_iter().zip(chunk_evaluations), num_chunks),
+            );
+            num_quotient_chunks.push(num_chunks);
+            acc = *next_acc;
+        }
+        let (quotient_commit, quotient_data) = pcs.commit_ldes(quotient_ldes);
         challenger.observe(quotient_commit.clone());
+
+        // Zero-knowledge: commit to a random polynomial per circuit, which the
+        // PCS folds into the FRI batch to hide the opened trace values.
+        let (random_commit, random_data) = if is_zk == 1 {
+            let ext_trace_domains = log_degrees
+                .iter()
+                .map(|log_degree| pcs.natural_domain_for_degree(1 << (log_degree + 1)));
+            let (commit, data) = pcs
+                .get_opt_randomization_poly_commitment(ext_trace_domains)
+                .expect("a zero-knowledge PCS provides a randomization commitment");
+            challenger.observe(commit.clone());
+            (Some(commit), Some(data))
+        } else {
+            (None, None)
+        };
         drop(_g);
 
         // save the commitments
@@ -423,45 +455,65 @@ where
             stage_1_trace: stage_1_trace_commit,
             stage_2_trace: stage_2_trace_commit,
             quotient_chunks: quotient_commit,
+            random: random_commit,
         };
 
         // Cost: "FRI opening" — barycentric interpolation (Σ n_i·B·W_i),
         // FRI folding (≈ H), and FRI queries (Q·R·log₂ H hash ops).
         let _g = tracing::info_span!("stark/fri_open").entered();
         let zeta: SC::Challenge = challenger.sample_algebra_element();
-        let mut round0_openings = vec![];
-        let mut round1_openings = vec![];
-        let mut round2_openings = vec![];
-        let mut round3_openings = vec![];
+        let mut random_openings = vec![];
+        let mut stage_1_openings = vec![];
+        let mut quotient_openings = vec![];
+        let mut preprocessed_openings = vec![];
+        let mut stage_2_openings = vec![];
         for i in 0..self.circuits.len() {
-            let log_degree = log_degrees[i];
-            let quotient_degree = quotient_degrees[i];
-            let trace_domain = pcs.natural_domain_for_degree(1 << log_degree);
+            let trace_domain = pcs.natural_domain_for_degree(1 << log_degrees[i]);
             let zeta_next = trace_domain
                 .next_point(zeta)
                 .expect("domain has no next point");
-            round1_openings.push(vec![zeta, zeta_next]);
-            round2_openings.push(vec![zeta, zeta_next]);
-            round3_openings.extend(vec![vec![zeta]; quotient_degree]);
+            random_openings.push(vec![zeta]);
+            stage_1_openings.push(vec![zeta, zeta_next]);
+            stage_2_openings.push(vec![zeta, zeta_next]);
+            quotient_openings.extend(vec![vec![zeta]; num_quotient_chunks[i]]);
             if self.preprocessed_indices[i].is_some() {
-                round0_openings.push(vec![zeta, zeta_next]);
+                preprocessed_openings.push(vec![zeta, zeta_next]);
             }
         }
-        let mut rounds = vec![
-            (&stage_1_trace_data, round1_openings),
-            (&stage_2_trace_data, round2_openings),
-            (&quotient_data, round3_openings),
-        ];
-        if self.preprocessed_commit.is_some() {
-            rounds.push((key.preprocessed_data.as_ref().unwrap(), round0_openings));
+        // The round order is dictated by the PCS: random polynomial (zero-
+        // knowledge only), stage 1, quotient, preprocessed (if any), stage 2.
+        // The hiding PCS strips its random columns from every round except the
+        // preprocessed one, which it locates by position.
+        let mut rounds = vec![];
+        if let Some(random_data) = &random_data {
+            rounds.push((random_data, random_openings));
         }
-        let (opened_values, opening_proof) = pcs.open(rounds, &mut challenger);
+        rounds.push((&stage_1_trace_data, stage_1_openings));
+        rounds.push((&quotient_data, quotient_openings));
+        if let Some(preprocessed_data) = &key.preprocessed_data {
+            rounds.push((preprocessed_data, preprocessed_openings));
+        }
+        rounds.push((&stage_2_trace_data, stage_2_openings));
+        let (opened_values, opening_proof) = pcs.open_with_preprocessing(
+            rounds,
+            &mut challenger,
+            key.preprocessed_data.is_some(),
+        );
         drop(_g);
         let mut opened_values_iter = opened_values.into_iter();
+        let random_opened_values = if is_zk == 1 {
+            opened_values_iter.next()
+        } else {
+            None
+        };
         let stage_1_opened_values = opened_values_iter.next().unwrap();
-        let stage_2_opened_values = opened_values_iter.next().unwrap();
         let quotient_opened_values = opened_values_iter.next().unwrap();
-        let preprocessed_opened_values = opened_values_iter.next();
+        let preprocessed_opened_values = if key.preprocessed_data.is_some() {
+            opened_values_iter.next()
+        } else {
+            None
+        };
+        let stage_2_opened_values = opened_values_iter.next().unwrap();
         debug_assert!(opened_values_iter.next().is_none());
         let log_degrees = log_degrees
             .into_iter()
@@ -476,6 +528,7 @@ where
             preprocessed_opened_values,
             stage_1_opened_values,
             stage_2_opened_values,
+            random_opened_values,
         }
     }
 }

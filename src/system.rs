@@ -38,6 +38,7 @@ where
         airs: impl IntoIterator<Item = LookupAir<A, Val<SC>>>,
     ) -> (Self, ProverKey<SC>) {
         let pcs = config.pcs();
+        let is_zk = config.is_zk();
         let mut circuits = vec![];
         let mut preprocessed_traces = vec![];
         let mut preprocessed_indices = vec![];
@@ -49,24 +50,26 @@ where
             // factor for FRI). Beyond that, proving would silently produce
             // invalid proofs, so reject the circuit upfront.
             assert!(
-                circuit.quotient_degree() <= config.max_quotient_degree(),
+                circuit.quotient_degree(is_zk) <= config.max_quotient_degree(),
                 "circuit {circuit_idx}: constraint degree {} needs quotient degree {}, but the \
                  PCS only supports {}; increase log_blowup or lower the constraint degree",
                 circuit.max_constraint_degree,
-                circuit.quotient_degree(),
+                circuit.quotient_degree(is_zk),
                 config.max_quotient_degree(),
             );
             circuits.push(circuit);
             if let Some(preprocessed_trace) = maybe_preprocessed_trace {
                 preprocessed_indices.push(Some(preprocessed_traces.len()));
-                let domain = pcs.natural_domain_for_degree(preprocessed_trace.height());
+                // Under zero-knowledge the PCS pads preprocessed traces to the
+                // doubled (extended) domain, without randomizing them.
+                let domain = pcs.natural_domain_for_degree(preprocessed_trace.height() << is_zk);
                 preprocessed_traces.push((domain, preprocessed_trace));
             } else {
                 preprocessed_indices.push(None);
             }
         }
         let (preprocessed_commit, preprocessed_data) = if !preprocessed_traces.is_empty() {
-            let (commit, data) = pcs.commit(preprocessed_traces);
+            let (commit, data) = pcs.commit_preprocessing(preprocessed_traces);
             (Some(commit), Some(data))
         } else {
             (None, None)
@@ -119,9 +122,18 @@ impl<A, F: Field> Circuit<A, F> {
     /// Degree of the quotient polynomial as a multiple of the trace degree.
     /// Division by the vanishing polynomial reduces the composition
     /// polynomial's degree by 1; the result is padded to a power of two so
-    /// the quotient can be split into equally-sized chunks.
-    pub fn quotient_degree(&self) -> usize {
-        (self.max_constraint_degree.max(2) - 1).next_power_of_two()
+    /// the quotient can be split into equally-sized chunks. Under
+    /// zero-knowledge (`is_zk = 1`) the randomized trace raises every
+    /// constraint's degree by one.
+    pub fn quotient_degree(&self, is_zk: usize) -> usize {
+        ((self.max_constraint_degree + is_zk).max(2) - 1).next_power_of_two()
+    }
+
+    /// Number of chunks the quotient is committed in: under zero-knowledge
+    /// the PCS commits each chunk on a doubled domain, so twice as many
+    /// chunks of the trace size are needed.
+    pub fn num_quotient_chunks(&self, is_zk: usize) -> usize {
+        self.quotient_degree(is_zk) << is_zk
     }
 }
 

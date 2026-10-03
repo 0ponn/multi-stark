@@ -197,9 +197,11 @@ where
             preprocessed_opened_values,
             stage_1_opened_values,
             stage_2_opened_values,
+            random_opened_values,
         } = proof;
         // first, verify the proof shape
-        let quotient_degrees = self.verify_shape(proof)?;
+        let num_quotient_chunks = self.verify_shape(proof)?;
+        let is_zk = self.config.is_zk();
 
         // Soundness: lookup argument. The accumulator was computed by the prover
         // under challenges (β, γ) that were sampled after the traces and claims were
@@ -231,9 +233,13 @@ where
         }
         challenger.observe(commitments.stage_1_trace.clone());
 
-        // Observe trace heights to bind the proof to specific domain sizes.
+        // Observe trace heights to bind the proof to specific domain sizes
+        // (and the extended heights under zero-knowledge).
         for log_degree in log_degrees {
             challenger.observe(Val::<SC>::from_u8(*log_degree));
+            if is_zk == 1 {
+                challenger.observe(Val::<SC>::from_usize(usize::from(*log_degree) + 1));
+            }
         }
 
         // Soundness: claims must be observed BEFORE lookup challenges are sampled.
@@ -279,36 +285,51 @@ where
         // constraint survives folding with probability ≥ 1 - (k-1)/|F_ext|.
         let constraint_challenge: SC::Challenge = challenger.sample_algebra_element();
 
-        // observe quotient commitment
+        // observe quotient commitment, then the random commitment (zero-knowledge)
         challenger.observe(commitments.quotient_chunks.clone());
+        if let Some(random_commit) = &commitments.random {
+            challenger.observe(random_commit.clone());
+        }
 
         // Soundness: OOD evaluation. ζ is sampled after all commitments are fixed.
         // A nonzero polynomial of degree ≤ D vanishes at ζ with probability ≤ D/|F_ext|.
         let zeta: SC::Challenge = challenger.sample_algebra_element();
+        let mut random_evaluations = vec![];
         let mut preprocessed_trace_evaluations = vec![];
         let mut stage_1_trace_evaluations = vec![];
         let mut stage_2_trace_evaluations = vec![];
         let mut quotient_chunks_evaluations = vec![];
         let mut last_quotient_i = 0;
         for i in 0..self.circuits.len() {
-            let log_degree = log_degrees[i];
-            let quotient_degree = quotient_degrees[i];
-            let log_quotient_degree = log2_strict_usize(quotient_degree);
+            let log_degree = usize::from(log_degrees[i]);
+            let num_chunks = num_quotient_chunks[i];
+            let log_quotient_degree = log2_strict_usize(num_chunks >> is_zk);
+            // Base domain for next-point arithmetic; the committed matrices
+            // (and the quotient domain) live on the extended domain.
             let trace_domain = pcs.natural_domain_for_degree(1 << log_degree);
-            let quotient_domain =
-                trace_domain.create_disjoint_domain((1 << log_degree) << log_quotient_degree);
-            let quotient_chunks_domains = quotient_domain.split_domains(quotient_degree);
-            let unshifted_quotient_chunks_domains = quotient_chunks_domains
+            let ext_trace_domain = pcs.natural_domain_for_degree(1 << (log_degree + is_zk));
+            let quotient_domain = ext_trace_domain
+                .create_disjoint_domain(1 << (log_degree + is_zk + log_quotient_degree));
+            let quotient_chunks_domains = quotient_domain.split_domains(num_chunks);
+            // Each chunk was committed on the natural domain of its size,
+            // doubled under zero-knowledge.
+            let committed_quotient_chunks_domains = quotient_chunks_domains
                 .iter()
-                .map(|domain| pcs.natural_domain_for_degree(domain.size()))
+                .map(|domain| pcs.natural_domain_for_degree(domain.size() << is_zk))
                 .collect::<Vec<_>>();
             let zeta_next = trace_domain
                 .next_point(zeta)
                 .ok_or(VerificationError::InvalidProofShape)?;
+            if let Some(random_opened_values) = random_opened_values {
+                random_evaluations.push((
+                    ext_trace_domain,
+                    vec![(zeta, random_opened_values[i][0].clone())],
+                ));
+            }
             if let Some(i) = self.preprocessed_indices[i] {
                 let preprocessed_opened_values = preprocessed_opened_values.as_ref().unwrap();
                 preprocessed_trace_evaluations.push((
-                    trace_domain,
+                    ext_trace_domain,
                     vec![
                         (zeta, preprocessed_opened_values[i][0].clone()),
                         (zeta_next, preprocessed_opened_values[i][1].clone()),
@@ -316,43 +337,44 @@ where
                 ));
             }
             stage_1_trace_evaluations.push((
-                trace_domain,
+                ext_trace_domain,
                 vec![
                     (zeta, stage_1_opened_values[i][0].clone()),
                     (zeta_next, stage_1_opened_values[i][1].clone()),
                 ],
             ));
             stage_2_trace_evaluations.push((
-                trace_domain,
+                ext_trace_domain,
                 vec![
                     (zeta, stage_2_opened_values[i][0].clone()),
                     (zeta_next, stage_2_opened_values[i][1].clone()),
                 ],
             ));
-            let iter = unshifted_quotient_chunks_domains
+            let iter = committed_quotient_chunks_domains
                 .into_iter()
-                .zip(
-                    quotient_opened_values[last_quotient_i..last_quotient_i + quotient_degree]
-                        .iter(),
-                )
+                .zip(quotient_opened_values[last_quotient_i..last_quotient_i + num_chunks].iter())
                 .map(|(domain, opened_values)| (domain, vec![(zeta, opened_values[0].clone())]));
             quotient_chunks_evaluations.extend(iter);
-            last_quotient_i += quotient_degree;
+            last_quotient_i += num_chunks;
         }
-        let mut coms_to_verify = vec![
-            (commitments.stage_1_trace.clone(), stage_1_trace_evaluations),
-            (commitments.stage_2_trace.clone(), stage_2_trace_evaluations),
-            (
-                commitments.quotient_chunks.clone(),
-                quotient_chunks_evaluations,
-            ),
-        ];
+        // Same round order as the prover: random (zero-knowledge only),
+        // stage 1, quotient, preprocessed (if any), stage 2.
+        let mut coms_to_verify = vec![];
+        if let Some(random_commit) = &commitments.random {
+            coms_to_verify.push((random_commit.clone(), random_evaluations));
+        }
+        coms_to_verify.push((commitments.stage_1_trace.clone(), stage_1_trace_evaluations));
+        coms_to_verify.push((
+            commitments.quotient_chunks.clone(),
+            quotient_chunks_evaluations,
+        ));
         if let Some(preprocessed_commitment) = &self.preprocessed_commit {
-            coms_to_verify.extend([(
+            coms_to_verify.push((
                 preprocessed_commitment.clone(),
                 preprocessed_trace_evaluations,
-            )])
+            ));
         }
+        coms_to_verify.push((commitments.stage_2_trace.clone(), stage_2_trace_evaluations));
         // Soundness: FRI proximity test. Verifies that the committed polynomials
         // are close to low-degree polynomials and that the claimed evaluations are
         // consistent with the commitments. Soundness error ≤ ρ^num_queries, where
@@ -366,18 +388,19 @@ where
         let mut last_quotient_i = 0;
         for i in 0..self.circuits.len() {
             let circuit = &self.circuits[i];
-            let degree = 1 << log_degrees[i];
-            let quotient_degree = quotient_degrees[i];
+            let log_degree = usize::from(log_degrees[i]);
+            let degree = 1 << log_degree;
+            let num_chunks = num_quotient_chunks[i];
+            let log_quotient_degree = log2_strict_usize(num_chunks >> is_zk);
             let next_acc = intermediate_accumulators[i];
             let stage_1_row = &stage_1_opened_values[i][0];
             let stage_1_next_row = &stage_1_opened_values[i][1];
             let stage_2_row = &stage_2_opened_values[i][0];
             let stage_2_next_row = &stage_2_opened_values[i][1];
-            let quotient_chunks = quotient_opened_values
-                [last_quotient_i..last_quotient_i + quotient_degree]
+            let quotient_chunks = quotient_opened_values[last_quotient_i..last_quotient_i + num_chunks]
                 .iter()
                 .map(|values| &values[0]);
-            last_quotient_i += quotient_degree;
+            last_quotient_i += num_chunks;
 
             // compute the composition polynomial evaluation
             let trace_domain = pcs.natural_domain_for_degree(degree);
@@ -428,9 +451,14 @@ where
             };
             circuit.air.eval(&mut folder);
             let composition_polynomial = folder.accumulator;
-            // compute the quotient evaluation
-            let quotient_domain = trace_domain.create_disjoint_domain(degree * quotient_degree);
-            let quotient_chunks_domains = quotient_domain.split_domains(quotient_degree);
+            // Recompose the quotient from its chunks. The chunk cosets are the
+            // split of the (extended) quotient domain, as in the prover; the
+            // doubling under zero-knowledge only affects how the PCS committed
+            // them, not the interpolation.
+            let ext_trace_domain = pcs.natural_domain_for_degree(degree << is_zk);
+            let quotient_domain = ext_trace_domain
+                .create_disjoint_domain(1 << (log_degree + is_zk + log_quotient_degree));
+            let quotient_chunks_domains = quotient_domain.split_domains(num_chunks);
             let zps = quotient_chunks_domains
                 .iter()
                 .enumerate()
@@ -473,24 +501,54 @@ where
     }
 
     /// Validates the structural shape of the proof without checking any cryptographic
-    /// properties. Returns the quotient degrees per circuit on success.
+    /// properties. Returns the number of quotient chunks per circuit on success.
     pub fn verify_shape(
         &self,
         proof: &Proof<SC>,
     ) -> Result<Vec<usize>, VerificationError<PcsError<SC>>> {
         let Proof {
+            commitments,
             intermediate_accumulators,
             log_degrees,
             quotient_opened_values,
             preprocessed_opened_values,
             stage_1_opened_values,
             stage_2_opened_values,
+            random_opened_values,
             ..
         } = proof;
+        let is_zk = self.config.is_zk();
         // The following are proof shape checks
         let num_circuits = self.circuits.len();
         // there must be at least one circuit
         ensure!(num_circuits > 0, VerificationError::InvalidSystem);
+        // the random commitment and its openings are present exactly under zero-knowledge
+        ensure_eq!(
+            commitments.random.is_some(),
+            is_zk == 1,
+            VerificationError::InvalidProofShape
+        );
+        ensure_eq!(
+            random_opened_values.is_some(),
+            is_zk == 1,
+            VerificationError::InvalidProofShape
+        );
+        if let Some(random_opened_values) = random_opened_values {
+            ensure_eq!(
+                random_opened_values.len(),
+                num_circuits,
+                VerificationError::InvalidProofShape
+            );
+            for values in random_opened_values {
+                // zeta only, one extension element
+                ensure_eq!(values.len(), 1, VerificationError::InvalidProofShape);
+                ensure_eq!(
+                    values[0].len(),
+                    <SC::Challenge as BasedVectorSpace<Val<SC>>>::DIMENSION,
+                    VerificationError::InvalidProofShape
+                );
+            }
+        }
         // there must be one log degree per circuit
         ensure_eq!(
             log_degrees.len(),
@@ -564,21 +622,21 @@ where
             }
         }
         // quotient round
-        let mut quotient_degrees = vec![];
+        let mut num_quotient_chunks = vec![];
         for (circuit, log_degree) in self.circuits.iter().zip(log_degrees) {
-            let quotient_degree = circuit.quotient_degree();
-            // The claimed log degree must be small enough that the quotient
-            // domain can still be committed and opened by the PCS. This also
-            // guards the `1 << log_degree` shifts used during verification
-            // against overflow on adversarial proofs.
+            let quotient_degree = circuit.quotient_degree(is_zk);
+            // The claimed log degree must be small enough that the (extended)
+            // quotient domain can still be committed and opened by the PCS.
+            // This also guards the `1 << log_degree` shifts used during
+            // verification against overflow on adversarial proofs.
             ensure!(
-                usize::from(*log_degree) + log2_strict_usize(quotient_degree)
+                usize::from(*log_degree) + is_zk + log2_strict_usize(quotient_degree)
                     <= self.config.max_log_degree(),
                 VerificationError::InvalidProofShape
             );
-            quotient_degrees.push(quotient_degree);
+            num_quotient_chunks.push(circuit.num_quotient_chunks(is_zk));
         }
-        let quotient_size: usize = quotient_degrees.iter().sum();
+        let quotient_size: usize = num_quotient_chunks.iter().sum();
         ensure_eq!(
             quotient_opened_values.len(),
             quotient_size,
@@ -605,7 +663,7 @@ where
             self.circuits.len(),
             VerificationError::InvalidProofShape
         );
-        Ok(quotient_degrees)
+        Ok(num_quotient_chunks)
     }
 }
 
@@ -696,6 +754,45 @@ mod tests {
     #[test]
     fn multi_stark_test() {
         let (system, key) = system();
+        let f = Val::from_u32;
+        let witness = SystemWitness::from_stage_1(
+            vec![
+                RowMajorMatrix::new(
+                    [3, 4, 5, 5, 12, 13, 8, 15, 17, 7, 24, 25].map(f).to_vec(),
+                    3,
+                ),
+                RowMajorMatrix::new([4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13, 13].map(f).to_vec(), 6),
+            ],
+            &system,
+        );
+        let no_claims = &[];
+        let proof = system.prove_multiple_claims(&key, no_claims, witness);
+        system.verify_multiple_claims(no_claims, &proof).unwrap();
+    }
+
+    fn system_zk() -> (
+        System<crate::types::GoldilocksBlake3ZkConfig<crate::types::SharedRng<rand::rngs::StdRng>>, CS>,
+        crate::system::ProverKey<crate::types::GoldilocksBlake3ZkConfig<crate::types::SharedRng<rand::rngs::StdRng>>>,
+    ) {
+        use rand::SeedableRng;
+        // Zero-knowledge raises every constraint degree by one, so the
+        // degree-3 test circuits need the blowup every Plonky3 ZK config uses.
+        let config = crate::types::GoldilocksBlake3ZkConfig::new(
+            CommitmentParameters {
+                log_blowup: 2,
+                cap_height: 0,
+            },
+            FRI_PARAMETERS,
+            crate::types::SharedRng::new(rand::rngs::StdRng::seed_from_u64(1)),
+        );
+        let pythagorean_circuit = LookupAir::new(CS::Pythagorean, vec![]);
+        let complex_circuit = LookupAir::new(CS::Complex, vec![]);
+        System::new(config, [pythagorean_circuit, complex_circuit])
+    }
+
+    #[test]
+    fn multi_stark_test_zk() {
+        let (system, key) = system_zk();
         let f = Val::from_u32;
         let witness = SystemWitness::from_stage_1(
             vec![
