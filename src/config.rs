@@ -82,7 +82,7 @@ pub trait StarkGenericConfig {
     /// added), 0 otherwise. Drives domain sizes, quotient chunk counts and the
     /// opening round layout in the prover and verifier.
     fn is_zk(&self) -> usize {
-        <Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::ZK as usize
+        usize::from(<Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::ZK)
     }
 
     /// Returns a fresh challenger.

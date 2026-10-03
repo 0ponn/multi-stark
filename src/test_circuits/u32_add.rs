@@ -129,10 +129,10 @@ mod tests {
     where
         SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
         SC::Pcs: p3_commit::Pcs<
-            crate::types::ExtVal,
-            SC::Challenger,
-            Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
-        >,
+                crate::types::ExtVal,
+                SC::Challenger,
+                Domain: p3_commit::PolynomialSpace<Val = Val>,
+            >,
     {
         let byte_table = LookupAir::new(U32CS::ByteTable, U32CS::ByteTable.lookups());
         let u32_add = LookupAir::new(U32CS::U32Add, U32CS::U32Add.lookups());
@@ -148,10 +148,10 @@ mod tests {
         where
             SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
             SC::Pcs: p3_commit::Pcs<
-                crate::types::ExtVal,
-                SC::Challenger,
-                Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
-            >,
+                    crate::types::ExtVal,
+                    SC::Challenger,
+                    Domain: p3_commit::PolynomialSpace<Val = Val>,
+                >,
         {
             let byte_width = 1;
             let add_width = 14;

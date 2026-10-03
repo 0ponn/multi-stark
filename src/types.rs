@@ -14,9 +14,9 @@ use p3_field::{ExtensionField, Field, TwoAdicField, extension::BinomialExtension
 use p3_fri::{FriParameters as InnerFriParameters, HidingFriPcs, TwoAdicFriPcs};
 use p3_goldilocks::Goldilocks;
 use p3_merkle_tree::{MerkleTreeHidingMmcs, MerkleTreeMmcs};
+use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
 use rand::Rng;
 use std::sync::{Arc, Mutex};
-use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
 
 pub type Val = Goldilocks;
 pub type PackedVal = <Val as Field>::Packing;
@@ -297,7 +297,12 @@ fn new_hiding_pcs<R: Rng + Clone>(
     let byte_hash = Blake3;
     let field_hash = SerializingHasher::new(byte_hash);
     let compress = Blake3CompressionFunction::new(byte_hash);
-    let val_mmcs = HidingMmcs::new(field_hash, compress, commitment_parameters.cap_height, rng.clone());
+    let val_mmcs = HidingMmcs::new(
+        field_hash,
+        compress,
+        commitment_parameters.cap_height,
+        rng.clone(),
+    );
     let mmcs = ExtensionMmcs::new(val_mmcs.clone());
     let inner_parameters = InnerFriParameters {
         log_blowup: commitment_parameters.log_blowup,
@@ -308,7 +313,13 @@ fn new_hiding_pcs<R: Rng + Clone>(
         query_proof_of_work_bits: fri_parameters.query_proof_of_work_bits,
         mmcs,
     };
-    HidingPcs::new(Dft::default(), val_mmcs, inner_parameters, NUM_RANDOM_CODEWORDS, rng)
+    HidingPcs::new(
+        Dft::default(),
+        val_mmcs,
+        inner_parameters,
+        NUM_RANDOM_CODEWORDS,
+        rng,
+    )
 }
 
 /// Zero-knowledge configuration for tests, with a deterministic seed.

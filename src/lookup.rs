@@ -398,10 +398,10 @@ mod tests {
     where
         SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
         SC::Pcs: p3_commit::Pcs<
-            crate::types::ExtVal,
-            SC::Challenger,
-            Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
-        >,
+                crate::types::ExtVal,
+                SC::Challenger,
+                Domain: p3_commit::PolynomialSpace<Val = Val>,
+            >,
     {
         let f = Val::from_u32;
         #[rustfmt::skip]

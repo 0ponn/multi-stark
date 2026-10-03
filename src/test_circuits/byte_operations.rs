@@ -111,10 +111,10 @@ mod tests {
         where
             SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
             SC::Pcs: p3_commit::Pcs<
-                crate::types::ExtVal,
-                SC::Challenger,
-                Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
-            >,
+                    crate::types::ExtVal,
+                    SC::Challenger,
+                    Domain: p3_commit::PolynomialSpace<Val = Val>,
+                >,
         {
             let mut byte_trace =
                 RowMajorMatrix::new(vec![Val::ZERO; TRACE_WIDTH * 256 * 256], TRACE_WIDTH);

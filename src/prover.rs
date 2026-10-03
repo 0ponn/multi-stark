@@ -494,11 +494,8 @@ where
             rounds.push((preprocessed_data, preprocessed_openings));
         }
         rounds.push((&stage_2_trace_data, stage_2_openings));
-        let (opened_values, opening_proof) = pcs.open_with_preprocessing(
-            rounds,
-            &mut challenger,
-            key.preprocessed_data.is_some(),
-        );
+        let (opened_values, opening_proof) =
+            pcs.open_with_preprocessing(rounds, &mut challenger, key.preprocessed_data.is_some());
         drop(_g);
         let mut opened_values_iter = opened_values.into_iter();
         let random_opened_values = if is_zk == 1 {

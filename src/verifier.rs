@@ -397,7 +397,8 @@ where
             let stage_1_next_row = &stage_1_opened_values[i][1];
             let stage_2_row = &stage_2_opened_values[i][0];
             let stage_2_next_row = &stage_2_opened_values[i][1];
-            let quotient_chunks = quotient_opened_values[last_quotient_i..last_quotient_i + num_chunks]
+            let quotient_chunks = quotient_opened_values
+                [last_quotient_i..last_quotient_i + num_chunks]
                 .iter()
                 .map(|values| &values[0]);
             last_quotient_i += num_chunks;
@@ -774,7 +775,7 @@ mod tests {
     /// test circuits need `log_blowup = 2`, as every Plonky3 ZK config uses.
     fn system_zk() -> (
         System<crate::types::ZkTestConfig, CS>,
-        crate::system::ProverKey<crate::types::ZkTestConfig>,
+        ProverKey<crate::types::ZkTestConfig>,
     ) {
         let config = crate::types::zk_test_config(2, FRI_PARAMETERS.num_queries, 1);
         let pythagorean_circuit = LookupAir::new(CS::Pythagorean, vec![]);

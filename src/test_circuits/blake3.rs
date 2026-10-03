@@ -1513,14 +1513,17 @@ mod tests {
     }
 
     impl Blake3CompressionClaims {
-        fn witness<SC>(&self, system: &System<SC, Blake3CompressionCircuit>) -> (Vec<RowMajorMatrix<Val>>, SystemWitness<Val>)
+        fn witness<SC>(
+            &self,
+            system: &System<SC, Blake3CompressionCircuit>,
+        ) -> (Vec<RowMajorMatrix<Val>>, SystemWitness<Val>)
         where
             SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
             SC::Pcs: p3_commit::Pcs<
-                crate::types::ExtVal,
-                SC::Challenger,
-                Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
-            >,
+                    crate::types::ExtVal,
+                    SC::Challenger,
+                    Domain: p3_commit::PolynomialSpace<Val = Val>,
+                >,
         {
             // Grabbing values from a claims
 
@@ -2460,13 +2463,13 @@ mod tests {
 
         fn run_test_with<SC>(config: SC, claims: &Blake3CompressionClaims)
         where
-                SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
-                SC::Pcs: p3_commit::Pcs<
+            SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
+            SC::Pcs: p3_commit::Pcs<
                     crate::types::ExtVal,
                     SC::Challenger,
-                    Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
+                    Domain: p3_commit::PolynomialSpace<Val = Val>,
                 >,
-                {
+        {
             // circuit testing
             let u8_circuit = LookupAir::new(
                 Blake3CompressionCircuit::U8Xor,
