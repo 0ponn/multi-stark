@@ -311,6 +311,29 @@ fn new_hiding_pcs<R: Rng + Clone>(
     HidingPcs::new(Dft::default(), val_mmcs, inner_parameters, NUM_RANDOM_CODEWORDS, rng)
 }
 
+/// Zero-knowledge configuration for tests, with a deterministic seed.
+#[cfg(test)]
+pub(crate) type ZkTestConfig = GoldilocksBlake3ZkConfig<SharedRng<rand::rngs::StdRng>>;
+
+#[cfg(test)]
+pub(crate) fn zk_test_config(log_blowup: usize, num_queries: usize, seed: u64) -> ZkTestConfig {
+    use rand::SeedableRng;
+    GoldilocksBlake3ZkConfig::new(
+        CommitmentParameters {
+            log_blowup,
+            cap_height: 0,
+        },
+        FriParameters {
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 0,
+        },
+        SharedRng::new(rand::rngs::StdRng::seed_from_u64(seed)),
+    )
+}
+
 #[cfg(test)]
 mod pcs_ref_gen {
     use super::*;

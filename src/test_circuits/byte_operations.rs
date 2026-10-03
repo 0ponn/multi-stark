@@ -107,7 +107,15 @@ mod tests {
     }
 
     impl ByteCalls {
-        fn witness(&self, system: &System<GoldilocksBlake3Config, ByteCS>) -> SystemWitness<Val> {
+        fn witness<SC>(&self, system: &System<SC, ByteCS>) -> SystemWitness<Val>
+        where
+            SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
+            SC::Pcs: p3_commit::Pcs<
+                crate::types::ExtVal,
+                SC::Challenger,
+                Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
+            >,
+        {
             let mut byte_trace =
                 RowMajorMatrix::new(vec![Val::ZERO; TRACE_WIDTH * 256 * 256], TRACE_WIDTH);
             for (op, x, y) in self.calls.iter() {
@@ -136,6 +144,30 @@ mod tests {
                 query_proof_of_work_bits: 0,
             },
         );
+        let circuit = LookupAir::new(ByteCS {}, ByteCS {}.lookups());
+        let (system, key) = System::new(config, vec![circuit]);
+        let calls = ByteCalls {
+            calls: vec![
+                (ByteOperation::Xor, 10, 5),
+                (ByteOperation::And, 30, 20),
+                (ByteOperation::Or, 100, 40),
+                (ByteOperation::PairU8Range, 200, 100),
+            ],
+        };
+        let witness = calls.witness(&system);
+        let f = Val::from_u32;
+        let claim1 = &[f(0), f(10), f(5), f(10 ^ 5)];
+        let claim2 = &[f(1), f(30), f(20), f(30 & 20)];
+        let claim3 = &[f(2), f(100), f(40), f(100 | 40)];
+        let claim4 = &[f(3), f(200), f(100)];
+        let claims: &[&[Val]] = &[claim1, claim2, claim3, claim4];
+        let proof = system.prove_multiple_claims(&key, claims, witness);
+        system.verify_multiple_claims(claims, &proof).unwrap();
+    }
+
+    #[test]
+    fn byte_test_zk() {
+        let config = crate::types::zk_test_config(2, 64, 1);
         let circuit = LookupAir::new(ByteCS {}, ByteCS {}.lookups());
         let (system, key) = System::new(config, vec![circuit]);
         let calls = ByteCalls {

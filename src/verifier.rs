@@ -770,21 +770,13 @@ mod tests {
         system.verify_multiple_claims(no_claims, &proof).unwrap();
     }
 
+    /// Zero-knowledge raises every constraint degree by one, so the degree-3
+    /// test circuits need `log_blowup = 2`, as every Plonky3 ZK config uses.
     fn system_zk() -> (
-        System<crate::types::GoldilocksBlake3ZkConfig<crate::types::SharedRng<rand::rngs::StdRng>>, CS>,
-        crate::system::ProverKey<crate::types::GoldilocksBlake3ZkConfig<crate::types::SharedRng<rand::rngs::StdRng>>>,
+        System<crate::types::ZkTestConfig, CS>,
+        crate::system::ProverKey<crate::types::ZkTestConfig>,
     ) {
-        use rand::SeedableRng;
-        // Zero-knowledge raises every constraint degree by one, so the
-        // degree-3 test circuits need the blowup every Plonky3 ZK config uses.
-        let config = crate::types::GoldilocksBlake3ZkConfig::new(
-            CommitmentParameters {
-                log_blowup: 2,
-                cap_height: 0,
-            },
-            FRI_PARAMETERS,
-            crate::types::SharedRng::new(rand::rngs::StdRng::seed_from_u64(1)),
-        );
+        let config = crate::types::zk_test_config(2, FRI_PARAMETERS.num_queries, 1);
         let pythagorean_circuit = LookupAir::new(CS::Pythagorean, vec![]);
         let complex_circuit = LookupAir::new(CS::Complex, vec![]);
         System::new(config, [pythagorean_circuit, complex_circuit])
@@ -830,6 +822,30 @@ mod tests {
         let no_claims = &[];
         let proof = system.prove_multiple_claims(&key, no_claims, witness);
         // Serialization round-trip
+        let proof_bytes = proof.to_bytes().expect("Failed to serialize proof");
+        let proof2 = Proof::from_bytes(&proof_bytes).expect("Failed to deserialize proof");
+        system.verify_multiple_claims(no_claims, &proof2).unwrap();
+    }
+
+    #[test]
+    fn multi_stark_prove_verify_serialize_zk() {
+        let (system, key) = system_zk();
+        let f = Val::from_u32;
+        let mut pythagorean_trace = [3, 4, 5].map(f).to_vec();
+        let mut complex_trace = [4, 2, 3, 1, 10, 10].map(f).to_vec();
+        for _ in 0..4 {
+            pythagorean_trace.extend(pythagorean_trace.clone());
+            complex_trace.extend(complex_trace.clone());
+        }
+        let witness = SystemWitness::from_stage_1(
+            vec![
+                RowMajorMatrix::new(pythagorean_trace, 3),
+                RowMajorMatrix::new(complex_trace, 6),
+            ],
+            &system,
+        );
+        let no_claims = &[];
+        let proof = system.prove_multiple_claims(&key, no_claims, witness);
         let proof_bytes = proof.to_bytes().expect("Failed to serialize proof");
         let proof2 = Proof::from_bytes(&proof_bytes).expect("Failed to deserialize proof");
         system.verify_multiple_claims(no_claims, &proof2).unwrap();

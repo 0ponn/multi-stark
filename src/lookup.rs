@@ -394,7 +394,15 @@ mod tests {
         System::new(config, [even, odd])
     }
 
-    fn witness(system: &System<GoldilocksBlake3Config, CS>) -> SystemWitness<Val> {
+    fn witness<SC>(system: &System<SC, CS>) -> SystemWitness<Val>
+    where
+        SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
+        SC::Pcs: p3_commit::Pcs<
+            crate::types::ExtVal,
+            SC::Challenger,
+            Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
+        >,
+    {
         let f = Val::from_u32;
         #[rustfmt::skip]
         let witness = SystemWitness::from_stage_1(
@@ -439,6 +447,37 @@ mod tests {
         let claim = &[f(0), f(4), f(1)];
         let proof = system.prove(&key, claim, witness);
         system.verify(claim, &proof).unwrap();
+    }
+
+    fn system_zk() -> (
+        System<crate::types::ZkTestConfig, CS>,
+        ProverKey<crate::types::ZkTestConfig>,
+    ) {
+        let config = crate::types::zk_test_config(2, 64, 1);
+        let even = LookupAir::new(CS::Even, CS::Even.lookups());
+        let odd = LookupAir::new(CS::Odd, CS::Odd.lookups());
+        System::new(config, [even, odd])
+    }
+
+    #[test]
+    fn lookup_test_zk() {
+        let (system, key) = system_zk();
+        let witness = witness(&system);
+        let f = Val::from_u32;
+        let claim = &[f(0), f(4), f(1)];
+        let proof = system.prove(&key, claim, witness);
+        system.verify(claim, &proof).unwrap();
+    }
+
+    #[test]
+    fn test_claim_split_rejected_zk() {
+        let (system, key) = system_zk();
+        let witness = witness(&system);
+        let f = Val::from_u32;
+        let claim = &[f(0), f(4), f(1)];
+        let proof = system.prove(&key, claim, witness);
+        let split_claims: &[&[Val]] = &[&[f(0), f(4)], &[f(1)]];
+        assert!(system.verify_multiple_claims(split_claims, &proof).is_err());
     }
 
     #[test]

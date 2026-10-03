@@ -125,12 +125,15 @@ mod tests {
         }
     }
 
-    fn byte_system(
-        config: GoldilocksBlake3Config,
-    ) -> (
-        System<GoldilocksBlake3Config, U32CS>,
-        ProverKey<GoldilocksBlake3Config>,
-    ) {
+    fn byte_system<SC>(config: SC) -> (System<SC, U32CS>, ProverKey<SC>)
+    where
+        SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
+        SC::Pcs: p3_commit::Pcs<
+            crate::types::ExtVal,
+            SC::Challenger,
+            Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
+        >,
+    {
         let byte_table = LookupAir::new(U32CS::ByteTable, U32CS::ByteTable.lookups());
         let u32_add = LookupAir::new(U32CS::U32Add, U32CS::U32Add.lookups());
         System::new(config, [byte_table, u32_add])
@@ -141,7 +144,15 @@ mod tests {
     }
 
     impl AddCalls {
-        fn witness(&self, system: &System<GoldilocksBlake3Config, U32CS>) -> SystemWitness<Val> {
+        fn witness<SC>(&self, system: &System<SC, U32CS>) -> SystemWitness<Val>
+        where
+            SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
+            SC::Pcs: p3_commit::Pcs<
+                crate::types::ExtVal,
+                SC::Challenger,
+                Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
+            >,
+        {
             let byte_width = 1;
             let add_width = 14;
             let mut byte_trace = RowMajorMatrix::new(vec![Val::ZERO; byte_width * 256], byte_width);
@@ -206,6 +217,24 @@ mod tests {
             },
         );
         let (system, key) = byte_system(config);
+        let calls = AddCalls {
+            calls: vec![(10, 5), (30, 20), (100, 100), (8000, 10000)],
+        };
+        let witness = calls.witness(&system);
+        let f = Val::from_u32;
+        let claim1 = &[f(1), f(10), f(5), f(15)];
+        let claim2 = &[f(1), f(30), f(20), f(50)];
+        let claim3 = &[f(1), f(100), f(100), f(200)];
+        let claim4 = &[f(1), f(8000), f(10000), f(18000)];
+        let claims: &[&[Val]] = &[claim1, claim2, claim3, claim4];
+        let proof = system.prove_multiple_claims(&key, claims, witness);
+        system.verify_multiple_claims(claims, &proof).unwrap();
+    }
+
+    /// Same circuits (with a preprocessed byte table) under zero-knowledge.
+    #[test]
+    fn u32_add_proof_zk() {
+        let (system, key) = byte_system(crate::types::zk_test_config(2, 64, 1));
         let calls = AddCalls {
             calls: vec![(10, 5), (30, 20), (100, 100), (8000, 10000)],
         };

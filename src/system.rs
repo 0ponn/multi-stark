@@ -339,6 +339,29 @@ mod tests {
         system.verify_multiple_claims(no_claims, &proof).unwrap();
     }
 
+    /// Under zero-knowledge the degree-5 circuit needs quotient degree 8
+    /// (constraint degree 6 after randomization), so `log_blowup = 3`.
+    #[test]
+    fn high_degree_constraint_with_larger_blowup_zk() {
+        let config = crate::types::zk_test_config(3, 40, 1);
+        let (system, key) = System::new(config, [LookupAir::new(HighDegreeAir, vec![])]);
+        let f = Val::from_u32;
+        let trace = RowMajorMatrix::new(vec![f(2), f(32), f(1), f(1), f(3), f(243), f(0), f(0)], 2);
+        let witness = SystemWitness::from_stage_1(vec![trace], &system);
+        let no_claims: &[&[Val]] = &[];
+        let proof = system.prove_multiple_claims(&key, no_claims, witness);
+        system.verify_multiple_claims(no_claims, &proof).unwrap();
+    }
+
+    /// The same circuit at `log_blowup = 2` is rejected at setup under
+    /// zero-knowledge, since the randomized degree no longer fits.
+    #[test]
+    #[should_panic(expected = "needs quotient degree 8, but the PCS only supports 4")]
+    fn excessive_constraint_degree_rejected_zk() {
+        let config = crate::types::zk_test_config(2, 40, 1);
+        System::new(config, [LookupAir::new(HighDegreeAir, vec![])]);
+    }
+
     #[test]
     #[should_panic(expected = "preprocessed trace height")]
     fn mismatched_preprocessed_height_panics() {

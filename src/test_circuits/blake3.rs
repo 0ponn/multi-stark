@@ -1513,10 +1513,15 @@ mod tests {
     }
 
     impl Blake3CompressionClaims {
-        fn witness(
-            &self,
-            system: &System<GoldilocksBlake3Config, Blake3CompressionCircuit>,
-        ) -> (Vec<RowMajorMatrix<Val>>, SystemWitness<Val>) {
+        fn witness<SC>(&self, system: &System<SC, Blake3CompressionCircuit>) -> (Vec<RowMajorMatrix<Val>>, SystemWitness<Val>)
+        where
+            SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
+            SC::Pcs: p3_commit::Pcs<
+                crate::types::ExtVal,
+                SC::Challenger,
+                Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
+            >,
+        {
             // Grabbing values from a claims
 
             let mut u32_xor_values_from_claims = vec![];
@@ -2436,7 +2441,6 @@ mod tests {
         ];
 
         fn run_test(claims: &Blake3CompressionClaims) {
-            // circuit testing
             let config = GoldilocksBlake3Config::new(
                 CommitmentParameters {
                     log_blowup: 1,
@@ -2450,6 +2454,20 @@ mod tests {
                     query_proof_of_work_bits: 0,
                 },
             );
+            run_test_with(config, claims);
+            run_test_with(crate::types::zk_test_config(2, 64, 1), claims);
+        }
+
+        fn run_test_with<SC>(config: SC, claims: &Blake3CompressionClaims)
+        where
+                SC: crate::config::StarkGenericConfig<Challenge = crate::types::ExtVal>,
+                SC::Pcs: p3_commit::Pcs<
+                    crate::types::ExtVal,
+                    SC::Challenger,
+                    Domain: p3_commit::PolynomialSpace<Val = crate::types::Val>,
+                >,
+                {
+            // circuit testing
             let u8_circuit = LookupAir::new(
                 Blake3CompressionCircuit::U8Xor,
                 Blake3CompressionCircuit::U8Xor.lookups(),
