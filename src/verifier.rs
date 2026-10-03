@@ -159,10 +159,8 @@ use p3_util::log2_strict_usize;
 /// Errors that can occur during proof verification.
 #[derive(Debug)]
 pub enum VerificationError<PcsErr> {
-    /// A provided claim is invalid.
-    ///
-    /// Note: this variant is not currently returned by any verification path.
-    /// It is reserved for future claim validation checks.
+    /// A provided claim is invalid: under accumulator masking, a claim whose
+    /// first element is [`crate::system::MASK_TAG`].
     InvalidClaim,
     /// The PCS opening proof failed to verify.
     InvalidOpeningArgument(PcsErr),
@@ -213,6 +211,16 @@ where
         // first, verify the proof shape
         let num_quotient_chunks = self.verify_shape(proof)?;
         let is_zk = self.config.is_zk();
+
+        // Soundness of accumulator masking: the mask channel is unconstrained,
+        // so a claim on it could be balanced without any computation.
+        if crate::system::masks_accumulators(is_zk, self.circuits.len()) {
+            let mask_tag = Val::<SC>::from_u64(crate::system::MASK_TAG);
+            ensure!(
+                claims.iter().all(|claim| claim.first() != Some(&mask_tag)),
+                VerificationError::InvalidClaim
+            );
+        }
 
         // Soundness: lookup argument. The accumulator was computed by the prover
         // under challenges (β, γ) that were sampled after the traces and claims were

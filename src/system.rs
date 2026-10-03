@@ -32,6 +32,12 @@ pub struct System<SC: StarkGenericConfig, A> {
 /// except by fingerprint collision (already in the soundness bound).
 pub const MASK_TAG: u64 = 0x6d61_736b_2d61_6363; // "mask-acc"
 
+/// Whether a system masks its lookup accumulators: under zero-knowledge, when
+/// there is more than one circuit (a single circuit's accumulator is 0).
+pub fn masks_accumulators(is_zk: usize, num_circuits: usize) -> bool {
+    is_zk == 1 && num_circuits >= 2
+}
+
 /// Stage-1 columns appended per circuit for masking:
 /// `[s, in_a, in_b, out_a, out_b]`.
 pub const MASK_COLUMNS: usize = 5;
@@ -62,11 +68,25 @@ where
         // for a secret ρ_i held only in the blinded stage-1 trace. Mask
         // multiplicities and values are unconstrained: any imbalance on the
         // mask channel leaves the final accumulator nonzero.
+        //
+        // Preconditions, all enforced or checked here or in the verifier:
+        // - no genuine lookup can have MASK_TAG as its first argument (callers'
+        //   lookups must pin their first argument to a channel constant);
+        // - no claim starts with MASK_TAG (the verifier rejects such claims;
+        //   otherwise the mask channel could balance them);
+        // - the challenge field has degree 2 over the base field, so the two
+        //   secret base elements per link make each mask uniform over it.
         let mut airs: Vec<_> = airs.into_iter().collect();
         let num_circuits = airs.len();
-        let mask = is_zk == 1 && num_circuits >= 2;
+        let mask = masks_accumulators(is_zk, num_circuits);
         let mut mask_lookup_counts = vec![0; num_circuits];
         if mask {
+            assert_eq!(
+                <SC::Challenge as p3_field::BasedVectorSpace<Val<SC>>>::DIMENSION,
+                2,
+                "accumulator masking uses two secret base elements per link and is only \
+                 hiding over a degree-2 challenge field"
+            );
             let tag = SymbolicExpression::Constant(Val::<SC>::from_u64(MASK_TAG));
             for (i, air) in airs.iter_mut().enumerate() {
                 let w = air.inner_air.width() + air.extra_width;

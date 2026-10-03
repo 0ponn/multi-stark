@@ -549,6 +549,26 @@ mod tests {
         ));
     }
 
+    /// Review finding (M7): mask multiplicities are unconstrained, so a claim
+    /// whose first element is MASK_TAG could be balanced by the mask channel
+    /// with no genuine computation. The verifier must refuse such claims.
+    #[test]
+    fn zk_mask_tag_claim_rejected() {
+        let (system, key) = system_zk();
+        let f = Val::from_u32;
+        let zero = RowMajorMatrix::new(vec![f(0); 4 * 6], 6);
+        let witness = SystemWitness::from_stage_1(vec![zero.clone(), zero], &system);
+        let tag = Val::from_u64(crate::system::MASK_TAG);
+        let claim: &[Val] = &[tag, f(1234), f(5678)];
+        crate::prover::FORGE.with(|t| t.set(Some((1234, 5678))));
+        let proof = system.prove(&key, claim, witness);
+        crate::prover::FORGE.with(|t| t.set(None));
+        assert!(matches!(
+            system.verify(claim, &proof),
+            Err(crate::verifier::VerificationError::InvalidClaim)
+        ));
+    }
+
     #[test]
     fn test_claim_split_rejected() {
         let (system, key) = system();

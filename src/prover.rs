@@ -258,6 +258,18 @@ where
         claims: &[&[Val<SC>]],
         mut witness: SystemWitness<Val<SC>>,
     ) -> Proof<SC> {
+        let masking = crate::system::masks_accumulators(self.config.is_zk(), self.circuits.len());
+        #[cfg(test)]
+        let masking_claims_checked = masking && FORGE.with(std::cell::Cell::get).is_none();
+        #[cfg(not(test))]
+        let masking_claims_checked = masking;
+        if masking_claims_checked {
+            let mask_tag = Val::<SC>::from_u64(crate::system::MASK_TAG);
+            assert!(
+                claims.iter().all(|claim| claim.first() != Some(&mask_tag)),
+                "claims must not start with MASK_TAG under accumulator masking"
+            );
+        }
         self.append_mask_columns(&mut witness);
         // initialize pcs and challenger
         let pcs = self.config.pcs();
@@ -549,14 +561,39 @@ impl<SC: StarkGenericConfig, A> System<SC, A> {
         if self.mask_lookup_counts.iter().all(|&k| k == 0) {
             return;
         }
+        assert_eq!(
+            witness.traces.len(),
+            num_circuits,
+            "expected one trace per circuit"
+        );
+        assert_eq!(
+            witness.lookups.len(),
+            num_circuits,
+            "expected lookups for every circuit"
+        );
         // ρ_i = (a, b) for i in 0..n-1, two fresh secret elements per link.
         let rho = self.config.sample_mask(2 * (num_circuits - 1));
+        assert_eq!(
+            rho.len(),
+            2 * (num_circuits - 1),
+            "a zero-knowledge config must implement sample_mask"
+        );
         #[cfg(test)]
         let tamper = TAMPER_MASK.with(std::cell::Cell::get);
         for (i, circuit) in self.circuits.iter().enumerate() {
             let trace = &witness.traces[i];
             let width = trace.width();
             let height = trace.height();
+            assert_eq!(
+                width + MASK_COLUMNS,
+                circuit.stage_1_width,
+                "circuit {i}: pass the trace without the accumulator-mask columns"
+            );
+            assert_eq!(
+                witness.lookups[i].len(),
+                height,
+                "circuit {i}: one lookup row per trace row"
+            );
             let mut values = Vec::with_capacity(height * (width + MASK_COLUMNS));
             for (r, row) in trace.row_slices().enumerate() {
                 values.extend_from_slice(row);
@@ -584,6 +621,17 @@ impl<SC: StarkGenericConfig, A> System<SC, A> {
                     values.extend_from_slice(&[Val::<SC>::ZERO; MASK_COLUMNS]);
                 }
             }
+            // Test hook: a cheating prover adds an extra unconstrained mask pull
+            // on row 1 of the last circuit (review finding, M7).
+            #[cfg(test)]
+            if let Some((x, y)) = FORGE.with(std::cell::Cell::get)
+                && i + 1 == num_circuits
+            {
+                let o = (width + MASK_COLUMNS) + width;
+                values[o] = Val::<SC>::ONE;
+                values[o + 1] = Val::<SC>::from_u64(x);
+                values[o + 2] = Val::<SC>::from_u64(y);
+            }
             let extended = RowMajorMatrix::new(values, width + MASK_COLUMNS);
             let k = self.mask_lookup_counts[i];
             let mask_lookups = &circuit.air.lookups[circuit.air.lookups.len() - k..];
@@ -601,6 +649,9 @@ impl<SC: StarkGenericConfig, A> System<SC, A> {
 
 #[cfg(test)]
 thread_local! {
+    /// Test hook: forge a mask-channel pull of `(MASK_TAG, x, y)`.
+    pub(crate) static FORGE: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
+
     /// Test hook: make the prover's mask pull disagree with the previous push.
     pub(crate) static TAMPER_MASK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
