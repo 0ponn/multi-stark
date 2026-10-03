@@ -85,6 +85,15 @@ pub trait StarkGenericConfig {
         usize::from(<Self::Pcs as Pcs<Self::Challenge, Self::Challenger>>::ZK)
     }
 
+    /// Smallest trace height the configuration can commit to while keeping
+    /// its hiding guarantee. A hiding PCS blinds an `h`-row trace with `h`
+    /// random rows, and every FRI query plus the out-of-domain points opens
+    /// one more evaluation; a shorter trace is determined by the openings.
+    /// The prover refuses and the verifier rejects anything shorter.
+    fn min_trace_height(&self) -> usize {
+        1
+    }
+
     /// Returns a fresh challenger.
     ///
     /// # Transcript contract

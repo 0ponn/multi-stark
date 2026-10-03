@@ -123,12 +123,22 @@
 //! security (≈ 50 bits proven) from FRI alone, plus additional grinding cost from
 //! PoW.
 //!
-//! ## Not zero-knowledge
+//! ## Zero-knowledge
 //!
-//! This protocol is a succinct argument of knowledge, **not** a zero-knowledge
-//! proof: traces are committed without blinding, and FRI query responses reveal
-//! actual low-degree-extension values of the witness. Do not use it when the
-//! witness must remain hidden from the verifier.
+//! With a plain PCS (e.g. [`crate::types::GoldilocksBlake3Config`]) this is a
+//! succinct argument of knowledge, **not** zero-knowledge: traces are committed
+//! without blinding and FRI query responses reveal low-degree-extension values
+//! of the witness.
+//!
+//! With a hiding PCS ([`crate::types::GoldilocksBlake3ZkConfig`], Plonky3's
+//! `HidingFriPcs`) the protocol follows Plonky3 batch-stark's zero-knowledge
+//! variant: traces are interleaved with random rows and random columns,
+//! Merkle leaves are salted, quotient chunks are randomized and a random
+//! polynomial is added to the FRI batch (statistical zero-knowledge for that
+//! last step, as in Plonky3). Residual leakage, not covered by blinding:
+//! each circuit's trace height (`log_degrees`) and the per-circuit lookup
+//! accumulators (`intermediate_accumulators`) are public. Traces must be at
+//! least [`crate::config::StarkGenericConfig::min_trace_height`] rows.
 
 use crate::{
     builder::folder::VerifierConstraintFolder,
@@ -601,6 +611,13 @@ where
                 num_openings,
                 VerificationError::InvalidProofShape
             );
+            if let Some(i) = preprocessed_i {
+                ensure_eq!(
+                    preprocessed_opened_values.as_ref().unwrap()[i].len(),
+                    num_openings,
+                    VerificationError::InvalidProofShape
+                );
+            }
             for j in 0..num_openings {
                 if let Some(i) = preprocessed_i {
                     ensure_eq!(
@@ -633,6 +650,12 @@ where
             ensure!(
                 usize::from(*log_degree) + is_zk + log2_strict_usize(quotient_degree)
                     <= self.config.max_log_degree(),
+                VerificationError::InvalidProofShape
+            );
+            // Traces shorter than the configuration's minimum cannot be
+            // hidden; a proof of one was made with weaker parameters.
+            ensure!(
+                1usize << *log_degree >= self.config.min_trace_height(),
                 VerificationError::InvalidProofShape
             );
             num_quotient_chunks.push(circuit.num_quotient_chunks(is_zk));
@@ -777,7 +800,7 @@ mod tests {
         System<crate::types::ZkTestConfig, CS>,
         ProverKey<crate::types::ZkTestConfig>,
     ) {
-        let config = crate::types::zk_test_config(2, FRI_PARAMETERS.num_queries, 1);
+        let config = crate::types::zk_test_config(2, 2, 1);
         let pythagorean_circuit = LookupAir::new(CS::Pythagorean, vec![]);
         let complex_circuit = LookupAir::new(CS::Complex, vec![]);
         System::new(config, [pythagorean_circuit, complex_circuit])
@@ -793,7 +816,15 @@ mod tests {
                     [3, 4, 5, 5, 12, 13, 8, 15, 17, 7, 24, 25].map(f).to_vec(),
                     3,
                 ),
-                RowMajorMatrix::new([4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13, 13].map(f).to_vec(), 6),
+                RowMajorMatrix::new(
+                    [
+                        4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13, 13, 4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13,
+                        13,
+                    ]
+                    .map(f)
+                    .to_vec(),
+                    6,
+                ),
             ],
             &system,
         );
@@ -858,7 +889,7 @@ mod tests {
         System<crate::types::ZkTestConfig, CS>,
         Proof<crate::types::ZkTestConfig>,
     ) {
-        let config = crate::types::zk_test_config(2, FRI_PARAMETERS.num_queries, seed);
+        let config = crate::types::zk_test_config(2, 2, seed);
         let (system, key) = System::new(
             config,
             [
@@ -873,7 +904,15 @@ mod tests {
                     [3, 4, 5, 5, 12, 13, 8, 15, 17, 7, 24, 25].map(f).to_vec(),
                     3,
                 ),
-                RowMajorMatrix::new([4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13, 13].map(f).to_vec(), 6),
+                RowMajorMatrix::new(
+                    [
+                        4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13, 13, 4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13,
+                        13,
+                    ]
+                    .map(f)
+                    .to_vec(),
+                    6,
+                ),
             ],
             &system,
         );
@@ -937,6 +976,63 @@ mod tests {
         }
     }
 
+    /// The hiding PCS adds only `h` random rows to an `h`-row trace, and every
+    /// FRI query plus the two out-of-domain points opens one more evaluation,
+    /// so a trace shorter than `num_queries + 2` rows is recoverable from the
+    /// proof (demonstrated in review on a 4-row trace). The prover must refuse.
+    #[test]
+    #[should_panic(expected = "below the zero-knowledge minimum")]
+    fn zk_short_trace_refused() {
+        let config = crate::types::zk_test_config(2, 100, 1);
+        let (system, key) = System::new(
+            config,
+            [
+                LookupAir::new(CS::Pythagorean, vec![]),
+                LookupAir::new(CS::Complex, vec![]),
+            ],
+        );
+        let f = Val::from_u32;
+        let witness = SystemWitness::from_stage_1(
+            vec![
+                RowMajorMatrix::new(
+                    [3, 4, 5, 5, 12, 13, 8, 15, 17, 7, 24, 25].map(f).to_vec(),
+                    3,
+                ),
+                RowMajorMatrix::new(
+                    [
+                        4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13, 13, 4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13,
+                        13,
+                    ]
+                    .map(f)
+                    .to_vec(),
+                    6,
+                ),
+            ],
+            &system,
+        );
+        let _ = system.prove_multiple_claims(&key, &[], witness);
+    }
+
+    /// A proof whose traces are below the zero-knowledge minimum height (made
+    /// by a prover with fewer queries) is rejected by a verifier that requires
+    /// more, by shape, before any cryptographic check.
+    #[test]
+    fn zk_short_trace_proof_rejected_by_shape() {
+        let (_, proof) = zk_proof_with_seed(1);
+        let config = crate::types::zk_test_config(2, 100, 1);
+        let (strict_system, _) = System::new(
+            config,
+            [
+                LookupAir::new(CS::Pythagorean, vec![]),
+                LookupAir::new(CS::Complex, vec![]),
+            ],
+        );
+        assert!(matches!(
+            strict_system.verify_multiple_claims(&[], &proof),
+            Err(VerificationError::InvalidProofShape)
+        ));
+    }
+
     // -- Negative / adversarial tests --
 
     /// Helper: creates a small system and valid proof for negative tests.
@@ -952,7 +1048,15 @@ mod tests {
                     [3, 4, 5, 5, 12, 13, 8, 15, 17, 7, 24, 25].map(f).to_vec(),
                     3,
                 ),
-                RowMajorMatrix::new([4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13, 13].map(f).to_vec(), 6),
+                RowMajorMatrix::new(
+                    [
+                        4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13, 13, 4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13,
+                        13,
+                    ]
+                    .map(f)
+                    .to_vec(),
+                    6,
+                ),
             ],
             &system,
         );

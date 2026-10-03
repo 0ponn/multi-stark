@@ -1795,7 +1795,9 @@ mod tests {
             }
             let mut state_transition_trace =
                 RowMajorMatrix::new(state_transition_trace_values, COMPRESSION_TRACE_WIDTH);
-            let height = state_transition_trace.height().next_power_of_two();
+            let height = state_transition_trace.height().next_power_of_two().max(
+                crate::config::StarkGenericConfig::min_trace_height(&system.config),
+            );
             let zero_rows_added = height - state_transition_trace.height();
             for _ in 0..zero_rows_added {
                 // we have 56 communications with G_Function circuit
@@ -1905,7 +1907,9 @@ mod tests {
             }
             let mut g_function_trace =
                 RowMajorMatrix::new(g_function_trace_values, G_FUNCTION_TRACE_WIDHT);
-            let height = g_function_trace.height().next_power_of_two();
+            let height = g_function_trace.height().next_power_of_two().max(
+                crate::config::StarkGenericConfig::min_trace_height(&system.config),
+            );
             let zero_rows_added = height - g_function_trace.height();
             for _ in 0..zero_rows_added {
                 u32_rotate_right_7_values_from_claims.push((0u32, 0u32));
@@ -1961,7 +1965,9 @@ mod tests {
                 }
             }
             let mut u32_xor_trace = RowMajorMatrix::new(u32_xor_trace_values, U32_XOR_TRACE_WIDTH);
-            let height = u32_xor_trace.height().next_power_of_two();
+            let height = u32_xor_trace.height().next_power_of_two().max(
+                crate::config::StarkGenericConfig::min_trace_height(&system.config),
+            );
             let zero_rows = height - u32_xor_trace.height();
             for _ in 0..zero_rows {
                 // we also need to balance the U8Xor circuit lookups using zeroes for every padded row
@@ -2010,7 +2016,9 @@ mod tests {
                 }
             }
             let mut u32_add_trace = RowMajorMatrix::new(u32_add_trace_values, U32_ADD_TRACE_WIDTH);
-            let height = u32_add_trace.height().next_power_of_two();
+            let height = u32_add_trace.height().next_power_of_two().max(
+                crate::config::StarkGenericConfig::min_trace_height(&system.config),
+            );
             let zero_rows = height - u32_add_trace.height();
             for _ in 0..zero_rows {
                 // we also need to balance the lookups using zeroes for every padded row
@@ -2057,7 +2065,9 @@ mod tests {
                 u32_rotate_right_8_trace_values,
                 U32_RIGHT_ROTATE_8_TRACE_WIDTH,
             );
-            let height = u32_rotate_right_8_trace.height().next_power_of_two();
+            let height = u32_rotate_right_8_trace.height().next_power_of_two().max(
+                crate::config::StarkGenericConfig::min_trace_height(&system.config),
+            );
             let zero_rows = height - u32_rotate_right_8_trace.height();
             for _ in 0..zero_rows {
                 // we also need to balance the lookups using zeroes for every padded row
@@ -2102,7 +2112,9 @@ mod tests {
                 u32_rotate_right_16_trace_values,
                 U32_RIGHT_ROTATE_16_TRACE_WIDTH,
             );
-            let height = u32_rotate_right_16_trace.height().next_power_of_two();
+            let height = u32_rotate_right_16_trace.height().next_power_of_two().max(
+                crate::config::StarkGenericConfig::min_trace_height(&system.config),
+            );
             let zero_rows = height - u32_rotate_right_16_trace.height();
             for _ in 0..zero_rows {
                 // we also need to balance the lookups using zeroes for every padded row
@@ -2114,6 +2126,7 @@ mod tests {
             fn rot_7_12_trace_values(
                 k: u32,
                 vals_from_claim: &[(u32, u32)],
+                min_height: usize,
             ) -> RowMajorMatrix<Val> {
                 let width = match k {
                     7 => U32_RIGHT_ROTATE_7_TRACE_WIDTH,
@@ -2157,19 +2170,25 @@ mod tests {
                 }
 
                 let mut trace = RowMajorMatrix::new(values, width);
-                let height = trace.height().next_power_of_two();
+                let height = trace.height().next_power_of_two().max(min_height);
                 trace.pad_to_height(height, Val::ZERO);
 
                 trace
             }
 
             // build U32RotateRight12 trace
-            let u32_rotate_right_12_trace =
-                rot_7_12_trace_values(12, &u32_rotate_right_12_values_from_claims);
+            let u32_rotate_right_12_trace = rot_7_12_trace_values(
+                12,
+                &u32_rotate_right_12_values_from_claims,
+                crate::config::StarkGenericConfig::min_trace_height(&system.config),
+            );
 
             // build U32RotateRight7 trace
-            let u32_rotate_right_7_trace =
-                rot_7_12_trace_values(7, &u32_rotate_right_7_values_from_claims);
+            let u32_rotate_right_7_trace = rot_7_12_trace_values(
+                7,
+                &u32_rotate_right_7_values_from_claims,
+                crate::config::StarkGenericConfig::min_trace_height(&system.config),
+            );
 
             // finally build U8Xor / U8PairRangeCheck trace (columns: multiplicity_u8_xor, multiplicity_pair_range_check)
             // since this it "lowest-level" trace, its multiplicities could be updated by other circuits previously
@@ -2458,7 +2477,7 @@ mod tests {
                 },
             );
             run_test_with(config, claims);
-            run_test_with(crate::types::zk_test_config(2, 64, 1), claims);
+            run_test_with(crate::types::zk_test_config(2, 2, 1), claims);
         }
 
         fn run_test_with<SC>(config: SC, claims: &Blake3CompressionClaims)

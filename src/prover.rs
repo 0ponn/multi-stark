@@ -261,6 +261,16 @@ where
         // initialize pcs and challenger
         let pcs = self.config.pcs();
         let is_zk = self.config.is_zk();
+        let min_trace_height = self.config.min_trace_height();
+        for (circuit_idx, trace) in witness.traces.iter().enumerate() {
+            assert!(
+                trace.height() >= min_trace_height,
+                "circuit {circuit_idx}: trace height {} is below the zero-knowledge minimum {}; \
+                 pad the trace (the openings would determine it)",
+                trace.height(),
+                min_trace_height,
+            );
+        }
         let mut challenger = self.config.initialise_challenger();
 
         // Bind the system shape into the transcript. The protocol parameters

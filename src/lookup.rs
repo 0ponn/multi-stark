@@ -453,7 +453,7 @@ mod tests {
         System<crate::types::ZkTestConfig, CS>,
         ProverKey<crate::types::ZkTestConfig>,
     ) {
-        let config = crate::types::zk_test_config(2, 64, 1);
+        let config = crate::types::zk_test_config(2, 2, 1);
         let even = LookupAir::new(CS::Even, CS::Even.lookups());
         let odd = LookupAir::new(CS::Odd, CS::Odd.lookups());
         System::new(config, [even, odd])

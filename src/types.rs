@@ -171,19 +171,25 @@ pub type HidingPcs<R> = HidingFriPcs<Val, Dft, HidingMmcs<R>, HidingExtMmcs<R>, 
 ///
 /// `rng` seeds all blinding; use an OS-backed generator in production.
 pub struct GoldilocksBlake3ZkConfig<R> {
-    pcs: HidingPcs<R>,
+    pcs: HidingPcs<SharedRng<R>>,
     challenger_seed: Vec<u8>,
     max_log_degree: usize,
     max_quotient_degree: usize,
+    min_trace_height: usize,
 }
 
-impl<R: Rng + Clone + Send + Sync> GoldilocksBlake3ZkConfig<R> {
+impl<R: rand::CryptoRng + Send> GoldilocksBlake3ZkConfig<R> {
+    /// `rng` must be a cryptographically secure generator. It is wrapped in a
+    /// single [`SharedRng`] so the Merkle salts, the trace blinding and the
+    /// FRI-batch polynomial all draw from one stream; giving the hiding MMCS
+    /// and PCS independent clones of a seeded generator would make their
+    /// draws identical and publish the blinding values in the opened salts.
     pub fn new(
         commitment_parameters: CommitmentParameters,
         fri_parameters: FriParameters,
         rng: R,
     ) -> Self {
-        let pcs = new_hiding_pcs(commitment_parameters, fri_parameters, rng);
+        let pcs = new_hiding_pcs(commitment_parameters, fri_parameters, SharedRng::new(rng));
         // A distinct tag: zero-knowledge transcripts must never collide with
         // plain ones even under identical parameters.
         let mut challenger_seed = b"multi-stark/v0-zk".to_vec();
@@ -199,26 +205,33 @@ impl<R: Rng + Clone + Send + Sync> GoldilocksBlake3ZkConfig<R> {
             let parameter = u64::try_from(parameter).expect("parameter exceeds u64");
             challenger_seed.extend_from_slice(&parameter.to_le_bytes());
         }
-        // The hiding PCS doubles every committed matrix, so the extended trace
-        // needs one more bit of two-adicity than the base trace.
-        let max_log_degree = Val::TWO_ADICITY - commitment_parameters.log_blowup - 1;
+        // The verifier adds the zero-knowledge doubling to the claimed degree
+        // itself, so the bound is the plain one.
+        let max_log_degree = Val::TWO_ADICITY - commitment_parameters.log_blowup;
         let max_quotient_degree = 1 << commitment_parameters.log_blowup;
+        // `num_queries` FRI openings plus ζ and ζ·g per column.
+        let min_trace_height = (fri_parameters.num_queries + 2).next_power_of_two();
         Self {
             pcs,
             challenger_seed,
             max_log_degree,
             max_quotient_degree,
+            min_trace_height,
         }
     }
 }
 
-impl<R: Rng + Clone + Send + Sync> StarkGenericConfig for GoldilocksBlake3ZkConfig<R> {
-    type Pcs = HidingPcs<R>;
+impl<R: Rng + Send> StarkGenericConfig for GoldilocksBlake3ZkConfig<R> {
+    type Pcs = HidingPcs<SharedRng<R>>;
     type Challenge = ExtVal;
     type Challenger = Challenger;
 
-    fn pcs(&self) -> &HidingPcs<R> {
+    fn pcs(&self) -> &HidingPcs<SharedRng<R>> {
         &self.pcs
+    }
+
+    fn min_trace_height(&self) -> usize {
+        self.min_trace_height
     }
 
     fn initialise_challenger(&self) -> Challenger {
@@ -325,7 +338,7 @@ fn new_hiding_pcs<R: Rng + Clone>(
 
 /// Zero-knowledge configuration for tests, with a deterministic seed.
 #[cfg(test)]
-pub(crate) type ZkTestConfig = GoldilocksBlake3ZkConfig<SharedRng<rand::rngs::StdRng>>;
+pub(crate) type ZkTestConfig = GoldilocksBlake3ZkConfig<rand::rngs::StdRng>;
 
 #[cfg(test)]
 pub(crate) fn zk_test_config(log_blowup: usize, num_queries: usize, seed: u64) -> ZkTestConfig {
@@ -342,7 +355,7 @@ pub(crate) fn zk_test_config(log_blowup: usize, num_queries: usize, seed: u64) -
             commit_proof_of_work_bits: 0,
             query_proof_of_work_bits: 0,
         },
-        SharedRng::new(rand::rngs::StdRng::seed_from_u64(seed)),
+        rand::rngs::StdRng::seed_from_u64(seed),
     )
 }
 

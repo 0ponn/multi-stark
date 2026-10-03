@@ -234,7 +234,7 @@ mod tests {
     /// Same circuits (with a preprocessed byte table) under zero-knowledge.
     #[test]
     fn u32_add_proof_zk() {
-        let (system, key) = byte_system(crate::types::zk_test_config(2, 64, 1));
+        let (system, key) = byte_system(crate::types::zk_test_config(2, 2, 1));
         let calls = AddCalls {
             calls: vec![(10, 5), (30, 20), (100, 100), (8000, 10000)],
         };

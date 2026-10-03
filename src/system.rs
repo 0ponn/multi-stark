@@ -343,7 +343,7 @@ mod tests {
     /// (constraint degree 6 after randomization), so `log_blowup = 3`.
     #[test]
     fn high_degree_constraint_with_larger_blowup_zk() {
-        let config = crate::types::zk_test_config(3, 40, 1);
+        let config = crate::types::zk_test_config(3, 2, 1);
         let (system, key) = System::new(config, [LookupAir::new(HighDegreeAir, vec![])]);
         let f = Val::from_u32;
         let trace = RowMajorMatrix::new(vec![f(2), f(32), f(1), f(1), f(3), f(243), f(0), f(0)], 2);
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "needs quotient degree 8, but the PCS only supports 4")]
     fn excessive_constraint_degree_rejected_zk() {
-        let config = crate::types::zk_test_config(2, 40, 1);
+        let config = crate::types::zk_test_config(2, 2, 1);
         System::new(config, [LookupAir::new(HighDegreeAir, vec![])]);
     }
 

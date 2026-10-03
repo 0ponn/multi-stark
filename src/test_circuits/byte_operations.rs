@@ -165,9 +165,39 @@ mod tests {
         system.verify_multiple_claims(claims, &proof).unwrap();
     }
 
+    /// Truncated preprocessed openings in an adversarial proof must be a shape
+    /// error, not an out-of-bounds panic in the verifier.
+    #[test]
+    fn truncated_preprocessed_openings_rejected() {
+        let config = GoldilocksBlake3Config::new(
+            CommitmentParameters {
+                log_blowup: 1,
+                cap_height: 0,
+            },
+            FriParameters {
+                log_final_poly_len: 0,
+                max_log_arity: 1,
+                num_queries: 64,
+                commit_proof_of_work_bits: 0,
+                query_proof_of_work_bits: 0,
+            },
+        );
+        let circuit = LookupAir::new(ByteCS {}, ByteCS {}.lookups());
+        let (system, key) = System::new(config, vec![circuit]);
+        let calls = ByteCalls {
+            calls: vec![(ByteOperation::Xor, 10, 5)],
+        };
+        let witness = calls.witness(&system);
+        let f = Val::from_u32;
+        let claim: &[Val] = &[f(0), f(10), f(5), f(10 ^ 5)];
+        let mut proof = system.prove_multiple_claims(&key, &[claim], witness);
+        proof.preprocessed_opened_values.as_mut().unwrap()[0].truncate(1);
+        assert!(system.verify_multiple_claims(&[claim], &proof).is_err());
+    }
+
     #[test]
     fn byte_test_zk() {
-        let config = crate::types::zk_test_config(2, 64, 1);
+        let config = crate::types::zk_test_config(2, 2, 1);
         let circuit = LookupAir::new(ByteCS {}, ByteCS {}.lookups());
         let (system, key) = System::new(config, vec![circuit]);
         let calls = ByteCalls {
