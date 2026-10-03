@@ -52,6 +52,10 @@ pub struct LookupAir<A, F: Field> {
     pub inner_air: A,
     pub lookups: Vec<Lookup<SymbolicExpression<F>>>,
     pub preprocessed: Option<RowMajorMatrix<F>>,
+    /// Stage-1 columns appended after the inner AIR's own columns (the
+    /// accumulator-mask columns under zero-knowledge). The inner AIR never
+    /// reads them; only `lookups` do.
+    pub extra_width: usize,
 }
 
 impl<A: BaseAir<F>, F: Field> LookupAir<A, F> {
@@ -61,6 +65,7 @@ impl<A: BaseAir<F>, F: Field> LookupAir<A, F> {
             inner_air,
             lookups,
             preprocessed,
+            extra_width: 0,
         }
     }
 
@@ -195,7 +200,7 @@ where
     F: Field,
 {
     fn width(&self) -> usize {
-        self.inner_air.width()
+        self.inner_air.width() + self.extra_width
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
@@ -478,6 +483,70 @@ mod tests {
         let proof = system.prove(&key, claim, witness);
         let split_claims: &[&[Val]] = &[&[f(0), f(4)], &[f(1)]];
         assert!(system.verify_multiple_claims(split_claims, &proof).is_err());
+    }
+
+    /// The leak M7 closes: an observer who guesses a circuit's lookups can
+    /// replay the public transcript to get the lookup challenges, recompute
+    /// the circuit's accumulator, and compare it with the published one.
+    /// Under zero-knowledge the published value must not match.
+    #[test]
+    fn zk_accumulators_do_not_confirm_witness() {
+        use crate::config::StarkGenericConfig;
+        use p3_challenger::{CanObserve, FieldChallenger};
+        let (system, key) = system_zk();
+        let witness = witness(&system);
+        let genuine_lookups = witness.lookups.clone();
+        let f = Val::from_u32;
+        let claim: &[Val] = &[f(0), f(4), f(1)];
+        let proof = system.prove(&key, claim, witness);
+        system.verify(claim, &proof).unwrap();
+
+        // Replay the prover's transcript up to the lookup challenges.
+        let mut challenger = system.config.initialise_challenger();
+        system.observe_shape(&mut challenger);
+        if let Some(commit) = &system.preprocessed_commit {
+            challenger.observe(commit.clone());
+        }
+        challenger.observe(proof.commitments.stage_1_trace.clone());
+        for log_degree in &proof.log_degrees {
+            challenger.observe(Val::from_u8(*log_degree));
+            challenger.observe(Val::from_usize(usize::from(*log_degree) + 1));
+        }
+        challenger.observe(Val::from_usize(1));
+        challenger.observe(Val::from_usize(claim.len()));
+        challenger.observe_slice(claim);
+        let beta: crate::types::ExtVal = challenger.sample_algebra_element();
+        challenger.observe_algebra_element(beta);
+        let gamma: crate::types::ExtVal = challenger.sample_algebra_element();
+
+        let acc = (beta + fingerprint(&gamma, claim.iter().copied())).inverse();
+        let (_, genuine) = Lookup::stage_2_traces(&genuine_lookups, beta, &gamma, acc);
+        assert_ne!(
+            genuine[0], proof.intermediate_accumulators[0],
+            "published accumulator equals the one recomputed from the guessed witness"
+        );
+        assert_eq!(
+            proof.intermediate_accumulators.last(),
+            Some(&crate::types::ExtVal::ZERO)
+        );
+    }
+
+    /// Soundness: mask messages are unconstrained, so a prover could pull a
+    /// value that was never pushed. The mask channel then fails to cancel and
+    /// the final accumulator is nonzero; the verifier must reject.
+    #[test]
+    fn zk_unbalanced_mask_rejected() {
+        let (system, key) = system_zk();
+        let witness = witness(&system);
+        let f = Val::from_u32;
+        let claim: &[Val] = &[f(0), f(4), f(1)];
+        crate::prover::TAMPER_MASK.with(|t| t.set(true));
+        let proof = system.prove(&key, claim, witness);
+        crate::prover::TAMPER_MASK.with(|t| t.set(false));
+        assert!(matches!(
+            system.verify(claim, &proof),
+            Err(crate::verifier::VerificationError::UnbalancedChannel)
+        ));
     }
 
     #[test]

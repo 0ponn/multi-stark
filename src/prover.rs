@@ -165,7 +165,7 @@ use crate::{
         Val,
     },
     lookup::{Lookup, fingerprint},
-    system::{ProverKey, System, SystemWitness},
+    system::{MASK_COLUMNS, ProverKey, System, SystemWitness},
 };
 use bincode::{
     config::{Configuration, Fixint, LittleEndian, standard},
@@ -256,8 +256,9 @@ where
         &self,
         key: &ProverKey<SC>,
         claims: &[&[Val<SC>]],
-        witness: SystemWitness<Val<SC>>,
+        mut witness: SystemWitness<Val<SC>>,
     ) -> Proof<SC> {
+        self.append_mask_columns(&mut witness);
         // initialize pcs and challenger
         let pcs = self.config.pcs();
         let is_zk = self.config.is_zk();
@@ -538,6 +539,70 @@ where
             random_opened_values,
         }
     }
+}
+
+impl<SC: StarkGenericConfig, A> System<SC, A> {
+    /// Fills the accumulator-mask columns and lookups that [`System::new`]
+    /// added under zero-knowledge. Callers build their witness without them.
+    fn append_mask_columns(&self, witness: &mut SystemWitness<Val<SC>>) {
+        let num_circuits = self.circuits.len();
+        if self.mask_lookup_counts.iter().all(|&k| k == 0) {
+            return;
+        }
+        // ρ_i = (a, b) for i in 0..n-1, two fresh secret elements per link.
+        let rho = self.config.sample_mask(2 * (num_circuits - 1));
+        #[cfg(test)]
+        let tamper = TAMPER_MASK.with(std::cell::Cell::get);
+        for (i, circuit) in self.circuits.iter().enumerate() {
+            let trace = &witness.traces[i];
+            let width = trace.width();
+            let height = trace.height();
+            let mut values = Vec::with_capacity(height * (width + MASK_COLUMNS));
+            for (r, row) in trace.row_slices().enumerate() {
+                values.extend_from_slice(row);
+                if r == 0 {
+                    let (in_a, in_b) = if i > 0 {
+                        #[cfg(test)]
+                        if tamper {
+                            // A cheating prover pulls a message nobody pushed.
+                            (rho[2 * (i - 1)] + Val::<SC>::ONE, rho[2 * (i - 1) + 1])
+                        } else {
+                            (rho[2 * (i - 1)], rho[2 * (i - 1) + 1])
+                        }
+                        #[cfg(not(test))]
+                        (rho[2 * (i - 1)], rho[2 * (i - 1) + 1])
+                    } else {
+                        (Val::<SC>::ZERO, Val::<SC>::ZERO)
+                    };
+                    let (out_a, out_b) = if i + 1 < num_circuits {
+                        (rho[2 * i], rho[2 * i + 1])
+                    } else {
+                        (Val::<SC>::ZERO, Val::<SC>::ZERO)
+                    };
+                    values.extend_from_slice(&[Val::<SC>::ONE, in_a, in_b, out_a, out_b]);
+                } else {
+                    values.extend_from_slice(&[Val::<SC>::ZERO; MASK_COLUMNS]);
+                }
+            }
+            let extended = RowMajorMatrix::new(values, width + MASK_COLUMNS);
+            let k = self.mask_lookup_counts[i];
+            let mask_lookups = &circuit.air.lookups[circuit.air.lookups.len() - k..];
+            for (r, row) in extended.row_slices().enumerate() {
+                witness.lookups[i][r].extend(
+                    mask_lookups
+                        .iter()
+                        .map(|lookup| lookup.compute_expr(row, None)),
+                );
+            }
+            witness.traces[i] = extended;
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook: make the prover's mask pull disagree with the previous push.
+    pub(crate) static TAMPER_MASK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[allow(clippy::too_many_arguments)]

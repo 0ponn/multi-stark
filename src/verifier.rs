@@ -135,10 +135,11 @@
 //! variant: traces are interleaved with random rows and random columns,
 //! Merkle leaves are salted, quotient chunks are randomized and a random
 //! polynomial is added to the FRI batch (statistical zero-knowledge for that
-//! last step, as in Plonky3). Residual leakage, not covered by blinding:
-//! each circuit's trace height (`log_degrees`) and the per-circuit lookup
-//! accumulators (`intermediate_accumulators`) are public. Traces must be at
-//! least [`crate::config::StarkGenericConfig::min_trace_height`] rows.
+//! last step, as in Plonky3). The per-circuit lookup accumulators are masked
+//! by a secret push/pull pair on a dedicated lookup channel between adjacent
+//! circuits (see [`crate::system::System::new`]). Residual leakage: each
+//! circuit's trace height (`log_degrees`) is public. Traces must be at least
+//! [`crate::config::StarkGenericConfig::min_trace_height`] rows.
 
 use crate::{
     builder::folder::VerifierConstraintFolder,

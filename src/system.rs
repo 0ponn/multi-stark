@@ -1,5 +1,8 @@
 use crate::{
-    builder::symbolic::{SymbolicAirBuilder, get_max_constraint_degree, get_symbolic_constraints},
+    builder::symbolic::{
+        SymbolicAirBuilder, SymbolicExpression, get_max_constraint_degree,
+        get_symbolic_constraints, var,
+    },
     config::{Com, PcsData, StarkGenericConfig, Val},
     lookup::{LOOKUP_PUBLIC_SIZE, Lookup, LookupAir},
 };
@@ -19,7 +22,19 @@ pub struct System<SC: StarkGenericConfig, A> {
     /// Maps each circuit index to its position within the preprocessed commitment.
     /// `None` if that circuit has no preprocessed trace.
     pub preprocessed_indices: Vec<Option<usize>>,
+    /// Number of accumulator-mask lookups appended to each circuit (0 when
+    /// not masking). See [`System::new`].
+    pub mask_lookup_counts: Vec<usize>,
 }
+
+/// Lookup tag of the accumulator-mask channel. Mask messages carry this tag
+/// as their first argument, so they cannot collide with any genuine message
+/// except by fingerprint collision (already in the soundness bound).
+pub const MASK_TAG: u64 = 0x6d61_736b_2d61_6363; // "mask-acc"
+
+/// Stage-1 columns appended per circuit for masking:
+/// `[s, in_a, in_b, out_a, out_b]`.
+pub const MASK_COLUMNS: usize = 5;
 
 /// Prover-side data that must be retained between system setup and proving.
 pub struct ProverKey<SC: StarkGenericConfig> {
@@ -39,6 +54,39 @@ where
     ) -> (Self, ProverKey<SC>) {
         let pcs = config.pcs();
         let is_zk = config.is_zk();
+        // Zero-knowledge: mask the public intermediate lookup accumulators.
+        // Circuit i pushes a fresh secret message (MASK_TAG, out_a, out_b) on
+        // row 0 and circuit i+1 pulls it back as (MASK_TAG, in_a, in_b). The
+        // pair cancels in the lookup sum, so soundness is unchanged, but every
+        // intermediate accumulator is offset by 1 / (β + fp(γ, MASK_TAG, ρ_i))
+        // for a secret ρ_i held only in the blinded stage-1 trace. Mask
+        // multiplicities and values are unconstrained: any imbalance on the
+        // mask channel leaves the final accumulator nonzero.
+        let mut airs: Vec<_> = airs.into_iter().collect();
+        let num_circuits = airs.len();
+        let mask = is_zk == 1 && num_circuits >= 2;
+        let mut mask_lookup_counts = vec![0; num_circuits];
+        if mask {
+            let tag = SymbolicExpression::Constant(Val::<SC>::from_u64(MASK_TAG));
+            for (i, air) in airs.iter_mut().enumerate() {
+                let w = air.inner_air.width() + air.extra_width;
+                air.extra_width += MASK_COLUMNS;
+                if i + 1 < num_circuits {
+                    air.lookups.push(Lookup::push(
+                        var(w),
+                        vec![tag.clone(), var(w + 3), var(w + 4)],
+                    ));
+                    mask_lookup_counts[i] += 1;
+                }
+                if i > 0 {
+                    air.lookups.push(Lookup::pull(
+                        var(w),
+                        vec![tag.clone(), var(w + 1), var(w + 2)],
+                    ));
+                    mask_lookup_counts[i] += 1;
+                }
+            }
+        }
         let mut circuits = vec![];
         let mut preprocessed_traces = vec![];
         let mut preprocessed_indices = vec![];
@@ -79,6 +127,7 @@ where
             circuits,
             preprocessed_commit,
             preprocessed_indices,
+            mask_lookup_counts,
         };
         let key = ProverKey { preprocessed_data };
         (system, key)
@@ -171,6 +220,9 @@ impl<F: Field> SystemWitness<F> {
             .zip(system.circuits.iter())
             .enumerate()
             .map(|(circuit_idx, (trace, circuit))| {
+                // The prover fills the accumulator-mask lookups itself.
+                let num_own = circuit.air.lookups.len() - system.mask_lookup_counts[circuit_idx];
+                let own_lookups = &circuit.air.lookups[..num_own];
                 if let Some(preprocessed) = &circuit.air.preprocessed {
                     assert_eq!(
                         trace.height(),
@@ -181,9 +233,7 @@ impl<F: Field> SystemWitness<F> {
                         .row_slices()
                         .zip(preprocessed.row_slices())
                         .map(|(row, preprocessed_row)| {
-                            circuit
-                                .air
-                                .lookups
+                            own_lookups
                                 .iter()
                                 .map(|lookup| lookup.compute_expr(row, Some(preprocessed_row)))
                                 .collect::<Vec<_>>()
@@ -193,9 +243,7 @@ impl<F: Field> SystemWitness<F> {
                     trace
                         .row_slices()
                         .map(|row| {
-                            circuit
-                                .air
-                                .lookups
+                            own_lookups
                                 .iter()
                                 .map(|lookup| lookup.compute_expr(row, None))
                                 .collect::<Vec<_>>()
@@ -216,7 +264,7 @@ impl<A, F: Field> Circuit<A, F> {
     {
         // as of now, we assume no public values apart from the lookup values
         let io_size = 0;
-        let stage_1_width = air.inner_air.width();
+        let stage_1_width = air.width();
         let stage_2_width = air.stage_2_width();
         let preprocessed_trace = air.preprocessed_trace();
         let preprocessed_height = preprocessed_trace.as_ref().map_or(0, |mat| mat.height());

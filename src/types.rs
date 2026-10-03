@@ -16,7 +16,7 @@ use p3_fri::{FriParameters as InnerFriParameters, HidingFriPcs, TwoAdicFriPcs};
 use p3_goldilocks::Goldilocks;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use std::sync::{Arc, Mutex};
 
 pub type Val = Goldilocks;
@@ -176,6 +176,8 @@ pub struct GoldilocksBlake3ZkConfig<R> {
     max_log_degree: usize,
     max_quotient_degree: usize,
     min_trace_height: usize,
+    /// The same stream the PCS and MMCS draw from, for accumulator masks.
+    mask_rng: SharedRng<R>,
 }
 
 impl<R: rand::CryptoRng + Send> GoldilocksBlake3ZkConfig<R> {
@@ -189,7 +191,8 @@ impl<R: rand::CryptoRng + Send> GoldilocksBlake3ZkConfig<R> {
         fri_parameters: FriParameters,
         rng: R,
     ) -> Self {
-        let pcs = new_hiding_pcs(commitment_parameters, fri_parameters, SharedRng::new(rng));
+        let shared = SharedRng::new(rng);
+        let pcs = new_hiding_pcs(commitment_parameters, fri_parameters, shared.clone());
         // A distinct tag: zero-knowledge transcripts must never collide with
         // plain ones even under identical parameters.
         let mut challenger_seed = b"multi-stark/v0-zk".to_vec();
@@ -217,6 +220,7 @@ impl<R: rand::CryptoRng + Send> GoldilocksBlake3ZkConfig<R> {
             max_log_degree,
             max_quotient_degree,
             min_trace_height,
+            mask_rng: shared,
         }
     }
 }
@@ -232,6 +236,11 @@ impl<R: Rng + Send> StarkGenericConfig for GoldilocksBlake3ZkConfig<R> {
 
     fn min_trace_height(&self) -> usize {
         self.min_trace_height
+    }
+
+    fn sample_mask(&self, n: usize) -> Vec<Val> {
+        let mut rng = self.mask_rng.clone();
+        (0..n).map(|_| rng.random()).collect()
     }
 
     fn initialise_challenger(&self) -> Challenger {

@@ -94,6 +94,13 @@ pub trait StarkGenericConfig {
         1
     }
 
+    /// Fresh secret field elements for masking the lookup accumulators under
+    /// zero-knowledge (see [`crate::system::System::new`]). Plain
+    /// configurations never mask and return nothing.
+    fn sample_mask(&self, _n: usize) -> Vec<Val<Self>> {
+        Vec::new()
+    }
+
     /// Returns a fresh challenger.
     ///
     /// # Transcript contract
