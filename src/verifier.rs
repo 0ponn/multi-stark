@@ -851,6 +851,91 @@ mod tests {
         system.verify_multiple_claims(no_claims, &proof2).unwrap();
     }
 
+    fn zk_proof_with_seed(
+        seed: u64,
+    ) -> (
+        System<crate::types::ZkTestConfig, CS>,
+        Proof<crate::types::ZkTestConfig>,
+    ) {
+        let config = crate::types::zk_test_config(2, FRI_PARAMETERS.num_queries, seed);
+        let (system, key) = System::new(
+            config,
+            [
+                LookupAir::new(CS::Pythagorean, vec![]),
+                LookupAir::new(CS::Complex, vec![]),
+            ],
+        );
+        let f = Val::from_u32;
+        let witness = SystemWitness::from_stage_1(
+            vec![
+                RowMajorMatrix::new(
+                    [3, 4, 5, 5, 12, 13, 8, 15, 17, 7, 24, 25].map(f).to_vec(),
+                    3,
+                ),
+                RowMajorMatrix::new([4, 2, 3, 1, 10, 10, 3, 2, 5, 1, 13, 13].map(f).to_vec(), 6),
+            ],
+            &system,
+        );
+        let proof = system.prove_multiple_claims(&key, &[], witness);
+        (system, proof)
+    }
+
+    /// Without the random polynomial the FRI batch is not hiding; a proof
+    /// missing it (or its openings) must be rejected by shape.
+    #[test]
+    fn zk_proof_without_randomization_rejected() {
+        let (system, mut proof) = zk_proof_with_seed(1);
+        proof.commitments.random = None;
+        assert!(matches!(
+            system.verify_multiple_claims(&[], &proof),
+            Err(VerificationError::InvalidProofShape)
+        ));
+        let (system, mut proof) = zk_proof_with_seed(1);
+        proof.random_opened_values = None;
+        assert!(matches!(
+            system.verify_multiple_claims(&[], &proof),
+            Err(VerificationError::InvalidProofShape)
+        ));
+    }
+
+    /// Randomization is live: the same witness under different blinding
+    /// seeds commits to different stage-1 matrices and opens different values.
+    #[test]
+    fn zk_proofs_of_same_witness_differ() {
+        let (system_a, proof_a) = zk_proof_with_seed(1);
+        let (system_b, proof_b) = zk_proof_with_seed(2);
+        system_a.verify_multiple_claims(&[], &proof_a).unwrap();
+        system_b.verify_multiple_claims(&[], &proof_b).unwrap();
+        assert_ne!(
+            proof_a.commitments.stage_1_trace,
+            proof_b.commitments.stage_1_trace
+        );
+        assert_ne!(proof_a.stage_1_opened_values, proof_b.stage_1_opened_values);
+        // The plain config, by contrast, is deterministic.
+        let (_, plain_a) = small_system_and_proof();
+        let (_, plain_b) = small_system_and_proof();
+        assert_eq!(
+            plain_a.commitments.stage_1_trace,
+            plain_b.commitments.stage_1_trace
+        );
+    }
+
+    /// A plain proof fed to the zero-knowledge verifier, and the reverse, is
+    /// rejected (at decode or by shape), never accepted and never a panic.
+    #[test]
+    fn cross_config_proofs_rejected() {
+        let (plain_system, plain_proof) = small_system_and_proof();
+        let (zk_system, zk_proof) = zk_proof_with_seed(1);
+        let plain_bytes = plain_proof.to_bytes().unwrap();
+        let zk_bytes = zk_proof.to_bytes().unwrap();
+        if let Ok(p) = Proof::<crate::types::ZkTestConfig>::from_bytes(&plain_bytes) {
+            assert!(zk_system.verify_multiple_claims(&[], &p).is_err());
+        }
+        if let Ok(p) = Proof::<GoldilocksBlake3Config>::from_bytes(&zk_bytes) {
+            assert!(plain_system.verify_multiple_claims(&[], &p).is_err());
+        }
+    }
+
     // -- Negative / adversarial tests --
 
     /// Helper: creates a small system and valid proof for negative tests.
