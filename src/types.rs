@@ -6,6 +6,7 @@
 //! concrete, batteries-included instantiation.
 
 use crate::config::StarkGenericConfig;
+use crate::hiding_mmcs::SyncHidingMmcs;
 use p3_blake3::Blake3;
 use p3_challenger::{HashChallenger, SerializingChallenger64};
 use p3_commit::{ExtensionMmcs, Pcs as PcsTrait};
@@ -13,7 +14,7 @@ use p3_dft::Radix2DitParallel;
 use p3_field::{ExtensionField, Field, TwoAdicField, extension::BinomialExtensionField};
 use p3_fri::{FriParameters as InnerFriParameters, HidingFriPcs, TwoAdicFriPcs};
 use p3_goldilocks::Goldilocks;
-use p3_merkle_tree::{MerkleTreeHidingMmcs, MerkleTreeMmcs};
+use p3_merkle_tree::MerkleTreeMmcs;
 use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
 use rand::Rng;
 use std::sync::{Arc, Mutex};
@@ -148,7 +149,7 @@ pub const NUM_RANDOM_CODEWORDS: usize = 4;
 /// Salt elements per Merkle leaf in the hiding MMCS (4 x 64 bits).
 pub const SALT_ELEMS: usize = 4;
 
-pub type HidingMmcs<R> = MerkleTreeHidingMmcs<
+pub type HidingMmcs<R> = SyncHidingMmcs<
     Val,
     u8,
     SerializingHasher<Blake3>,
@@ -343,6 +344,17 @@ pub(crate) fn zk_test_config(log_blowup: usize, num_queries: usize, seed: u64) -
         },
         SharedRng::new(rand::rngs::StdRng::seed_from_u64(seed)),
     )
+}
+
+#[cfg(test)]
+mod zk_config_tests {
+    /// Aiur shares the system across rayon threads, so the zero-knowledge
+    /// configuration must be `Send + Sync`.
+    #[test]
+    fn zk_config_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<super::ZkTestConfig>();
+    }
 }
 
 #[cfg(test)]
