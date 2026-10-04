@@ -212,8 +212,12 @@ impl<R: rand::CryptoRng + Send> GoldilocksBlake3ZkConfig<R> {
         // itself, so the bound is the plain one.
         let max_log_degree = Val::TWO_ADICITY - commitment_parameters.log_blowup;
         let max_quotient_degree = 1 << commitment_parameters.log_blowup;
-        // `num_queries` FRI openings plus ζ and ζ·g per column.
-        let min_trace_height = (fri_parameters.num_queries + 2).next_power_of_two();
+        // Plonky3's hiding budget (PR #2100, `HidingFriPcs::hiding_budget`),
+        // which this Plonky3 rev predates: `2 · (D · points + num_queries)`
+        // with two opening points, ζ and ζ·g.
+        let extension_degree = <ExtVal as p3_field::BasedVectorSpace<Val>>::DIMENSION;
+        let min_trace_height =
+            (2 * (extension_degree * 2 + fri_parameters.num_queries)).next_power_of_two();
         Self {
             pcs,
             challenger_seed,
@@ -376,6 +380,21 @@ mod zk_config_tests {
     fn zk_config_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<super::ZkTestConfig>();
+    }
+
+    /// The minimum trace height is Plonky3's hiding budget (PR #2100):
+    /// `2 · (D · points + num_queries)` with `D = 2` and two opening points.
+    #[test]
+    fn zk_min_trace_height_matches_plonky3_hiding_budget() {
+        use crate::config::StarkGenericConfig;
+        for (num_queries, expected) in [(100, 256), (1, 16), (124, 256), (125, 512)] {
+            let config = super::zk_test_config(2, num_queries, 1);
+            assert_eq!(
+                config.min_trace_height(),
+                expected,
+                "num_queries = {num_queries}"
+            );
+        }
     }
 }
 

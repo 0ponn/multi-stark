@@ -156,9 +156,15 @@ mod tests {
             let byte_width = 1;
             let add_width = 14;
             let mut byte_trace = RowMajorMatrix::new(vec![Val::ZERO; byte_width * 256], byte_width);
-            let add_height = add_width * self.calls.len().next_power_of_two();
-            let mut add_trace = RowMajorMatrix::new(vec![Val::ZERO; add_height], add_width);
+            let rows = self
+                .calls
+                .len()
+                .next_power_of_two()
+                .max(system.config.min_trace_height());
+            let mut add_trace = RowMajorMatrix::new(vec![Val::ZERO; add_width * rows], add_width);
             self.traces(&mut byte_trace, &mut add_trace);
+            // Each all-zero padding row still range-checks its 12 zero bytes.
+            byte_trace.row_mut(0)[0] += Val::from_usize(12 * (rows - self.calls.len()));
             let traces = vec![byte_trace, add_trace];
             SystemWitness::from_stage_1(traces, system)
         }

@@ -410,7 +410,7 @@ mod tests {
     {
         let f = Val::from_u32;
         #[rustfmt::skip]
-        let witness = SystemWitness::from_stage_1(
+        let witness = SystemWitness::from_stage_1_padded(
             vec![
                 RowMajorMatrix::new(
                     vec![
@@ -557,7 +557,7 @@ mod tests {
         let (system, key) = system_zk();
         let f = Val::from_u32;
         let zero = RowMajorMatrix::new(vec![f(0); 4 * 6], 6);
-        let witness = SystemWitness::from_stage_1(vec![zero.clone(), zero], &system);
+        let witness = SystemWitness::from_stage_1_padded(vec![zero.clone(), zero], &system);
         let tag = Val::from_u64(crate::system::MASK_TAG);
         let claim: &[Val] = &[tag, f(1234), f(5678)];
         crate::prover::FORGE.with(|t| t.set(Some((1234, 5678))));

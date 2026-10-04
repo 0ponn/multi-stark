@@ -274,6 +274,27 @@ impl<F: Field> SystemWitness<F> {
             .collect::<Vec<_>>();
         Self { traces, lookups }
     }
+
+    /// [`Self::from_stage_1`] after padding each trace with zero rows up to
+    /// the configuration's minimum trace height. The test circuits accept
+    /// all-zero rows, which they already use as padding.
+    #[cfg(test)]
+    pub(crate) fn from_stage_1_padded<SC, A>(
+        mut traces: Vec<RowMajorMatrix<F>>,
+        system: &System<SC, A>,
+    ) -> Self
+    where
+        SC: StarkGenericConfig,
+        SC::Pcs: Pcs<SC::Challenge, SC::Challenger, Domain: PolynomialSpace<Val = F>>,
+    {
+        let min_height = system.config.min_trace_height();
+        for trace in &mut traces {
+            if trace.height() < min_height {
+                trace.pad_to_height(min_height, F::ZERO);
+            }
+        }
+        Self::from_stage_1(traces, system)
+    }
 }
 
 impl<A, F: Field> Circuit<A, F> {
@@ -415,7 +436,7 @@ mod tests {
         let (system, key) = System::new(config, [LookupAir::new(HighDegreeAir, vec![])]);
         let f = Val::from_u32;
         let trace = RowMajorMatrix::new(vec![f(2), f(32), f(1), f(1), f(3), f(243), f(0), f(0)], 2);
-        let witness = SystemWitness::from_stage_1(vec![trace], &system);
+        let witness = SystemWitness::from_stage_1_padded(vec![trace], &system);
         let no_claims: &[&[Val]] = &[];
         let proof = system.prove_multiple_claims(&key, no_claims, witness);
         system.verify_multiple_claims(no_claims, &proof).unwrap();

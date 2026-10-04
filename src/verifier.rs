@@ -819,7 +819,7 @@ mod tests {
     fn multi_stark_test_zk() {
         let (system, key) = system_zk();
         let f = Val::from_u32;
-        let witness = SystemWitness::from_stage_1(
+        let witness = SystemWitness::from_stage_1_padded(
             vec![
                 RowMajorMatrix::new(
                     [3, 4, 5, 5, 12, 13, 8, 15, 17, 7, 24, 25].map(f).to_vec(),
@@ -878,7 +878,7 @@ mod tests {
             pythagorean_trace.extend(pythagorean_trace.clone());
             complex_trace.extend(complex_trace.clone());
         }
-        let witness = SystemWitness::from_stage_1(
+        let witness = SystemWitness::from_stage_1_padded(
             vec![
                 RowMajorMatrix::new(pythagorean_trace, 3),
                 RowMajorMatrix::new(complex_trace, 6),
@@ -907,7 +907,7 @@ mod tests {
             ],
         );
         let f = Val::from_u32;
-        let witness = SystemWitness::from_stage_1(
+        let witness = SystemWitness::from_stage_1_padded(
             vec![
                 RowMajorMatrix::new(
                     [3, 4, 5, 5, 12, 13, 8, 15, 17, 7, 24, 25].map(f).to_vec(),
@@ -985,10 +985,10 @@ mod tests {
         }
     }
 
-    /// The hiding PCS adds only `h` random rows to an `h`-row trace, and every
-    /// FRI query plus the two out-of-domain points opens one more evaluation,
-    /// so a trace shorter than `num_queries + 2` rows is recoverable from the
-    /// proof (demonstrated in review on a 4-row trace). The prover must refuse.
+    /// The hiding PCS adds only `h` random rows to an `h`-row trace, so a
+    /// trace below Plonky3's hiding budget is exposed by the FRI queries and
+    /// out-of-domain openings (demonstrated in review on a 4-row trace). The
+    /// prover must refuse.
     #[test]
     #[should_panic(expected = "below the zero-knowledge minimum")]
     fn zk_short_trace_refused() {

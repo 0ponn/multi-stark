@@ -87,8 +87,8 @@ pub trait StarkGenericConfig {
 
     /// Smallest trace height the configuration can commit to while keeping
     /// its hiding guarantee. A hiding PCS blinds an `h`-row trace with `h`
-    /// random rows, and every FRI query plus the out-of-domain points opens
-    /// one more evaluation; a shorter trace is determined by the openings.
+    /// random rows, and the FRI queries and out-of-domain points open
+    /// evaluations of it; Plonky3 bounds `h` by `2 · (D · points + queries)`.
     /// The prover refuses and the verifier rejects anything shorter.
     fn min_trace_height(&self) -> usize {
         1
