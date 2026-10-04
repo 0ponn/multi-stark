@@ -218,4 +218,23 @@ mod tests {
         let proof = system.prove_multiple_claims(&key, claims, witness);
         system.verify_multiple_claims(claims, &proof).unwrap();
     }
+
+    /// A verifier builds its own system, with its own RNG, from the same
+    /// circuits (as a separate process does). The preprocessed commitment is
+    /// part of the verifying key, so it must not depend on that RNG.
+    #[test]
+    fn zk_proof_verifies_under_independently_built_system() {
+        let circuit = || vec![LookupAir::new(ByteCS {}, ByteCS {}.lookups())];
+        let (system, key) = System::new(crate::types::zk_test_config(2, 2, 1), circuit());
+        let (verifier, _) = System::new(crate::types::zk_test_config(2, 2, 2), circuit());
+        assert_eq!(system.preprocessed_commit, verifier.preprocessed_commit);
+        let calls = ByteCalls {
+            calls: vec![(ByteOperation::Xor, 10, 5)],
+        };
+        let witness = calls.witness(&system);
+        let f = Val::from_u32;
+        let claims: &[&[Val]] = &[&[f(0), f(10), f(5), f(10 ^ 5)]];
+        let proof = system.prove_multiple_claims(&key, claims, witness);
+        verifier.verify_multiple_claims(claims, &proof).unwrap();
+    }
 }

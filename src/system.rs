@@ -137,7 +137,9 @@ where
             }
         }
         let (preprocessed_commit, preprocessed_data) = if !preprocessed_traces.is_empty() {
-            let (commit, data) = pcs.commit_preprocessing(preprocessed_traces);
+            let (commit, data) = config
+                .preprocessing_pcs()
+                .commit_preprocessing(preprocessed_traces);
             (Some(commit), Some(data))
         } else {
             (None, None)

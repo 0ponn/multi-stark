@@ -107,19 +107,47 @@ impl StarkGenericConfig for GoldilocksBlake3Config {
 /// A `Clone`-able handle to one shared random generator. Plonky3's hiding
 /// MMCS and PCS each take an owned `R: Clone`; cloning a seeded generator
 /// would give them identical streams, so every clone of this handle draws
-/// from the same underlying generator instead.
+/// from the same underlying generator instead. A handle made by
+/// [`SharedRng::fixed`] draws from a seeded generator instead, for commitments
+/// to public data that every process must reproduce.
 #[derive(Debug)]
-pub struct SharedRng<R>(Arc<Mutex<R>>);
+pub struct SharedRng<R> {
+    live: Arc<Mutex<R>>,
+    fixed: Option<Arc<Mutex<rand::rngs::StdRng>>>,
+}
 
 impl<R> Clone for SharedRng<R> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self {
+            live: Arc::clone(&self.live),
+            fixed: self.fixed.clone(),
+        }
     }
 }
 
 impl<R: Rng> SharedRng<R> {
     pub fn new(rng: R) -> Self {
-        Self(Arc::new(Mutex::new(rng)))
+        Self {
+            live: Arc::new(Mutex::new(rng)),
+            fixed: None,
+        }
+    }
+
+    /// A handle of the same type that draws from a generator seeded with
+    /// `seed`. Only for public data: its output is predictable.
+    fn fixed(&self, seed: [u8; 32]) -> Self {
+        use rand::SeedableRng;
+        Self {
+            live: Arc::clone(&self.live),
+            fixed: Some(Arc::new(Mutex::new(rand::rngs::StdRng::from_seed(seed)))),
+        }
+    }
+
+    fn draw<T>(&self, f: impl FnOnce(&mut dyn Rng) -> T) -> T {
+        match &self.fixed {
+            Some(fixed) => f(&mut *fixed.lock().expect("rng poisoned")),
+            None => f(&mut *self.live.lock().expect("rng poisoned")),
+        }
     }
 }
 
@@ -127,15 +155,15 @@ impl<R: Rng> rand::TryRng for SharedRng<R> {
     type Error = core::convert::Infallible;
 
     fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
-        Ok(self.0.lock().expect("rng poisoned").next_u32())
+        Ok(self.draw(|rng| rng.next_u32()))
     }
 
     fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
-        Ok(self.0.lock().expect("rng poisoned").next_u64())
+        Ok(self.draw(|rng| rng.next_u64()))
     }
 
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
-        self.0.lock().expect("rng poisoned").fill_bytes(dst);
+        self.draw(|rng| rng.fill_bytes(dst));
         Ok(())
     }
 }
@@ -178,7 +206,14 @@ pub struct GoldilocksBlake3ZkConfig<R> {
     min_trace_height: usize,
     /// The same stream the PCS and MMCS draw from, for accumulator masks.
     mask_rng: SharedRng<R>,
+    /// Same parameters as `pcs`, salting from a fixed seed: commits the
+    /// public preprocessed traces, whose commitment is in the verifying key.
+    preprocessing_pcs: HidingPcs<SharedRng<R>>,
 }
+
+/// Seed for the preprocessed-trace salts. They are opened in every proof and
+/// cover public data, so they need to be reproducible, not secret.
+const PREPROCESSING_SALT_SEED: [u8; 32] = *b"multi-stark/v0-zk/preprocessed!!";
 
 impl<R: rand::CryptoRng + Send> GoldilocksBlake3ZkConfig<R> {
     /// `rng` must be a cryptographically secure generator. It is wrapped in a
@@ -224,6 +259,11 @@ impl<R: rand::CryptoRng + Send> GoldilocksBlake3ZkConfig<R> {
             max_log_degree,
             max_quotient_degree,
             min_trace_height,
+            preprocessing_pcs: new_hiding_pcs(
+                commitment_parameters,
+                fri_parameters,
+                shared.fixed(PREPROCESSING_SALT_SEED),
+            ),
             mask_rng: shared,
         }
     }
@@ -236,6 +276,10 @@ impl<R: Rng + Send> StarkGenericConfig for GoldilocksBlake3ZkConfig<R> {
 
     fn pcs(&self) -> &HidingPcs<SharedRng<R>> {
         &self.pcs
+    }
+
+    fn preprocessing_pcs(&self) -> &HidingPcs<SharedRng<R>> {
+        &self.preprocessing_pcs
     }
 
     fn min_trace_height(&self) -> usize {

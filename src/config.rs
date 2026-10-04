@@ -77,6 +77,14 @@ pub trait StarkGenericConfig {
     /// Returns a reference to the PCS.
     fn pcs(&self) -> &Self::Pcs;
 
+    /// The PCS that commits the preprocessed traces in
+    /// [`crate::system::System::new`]. That commitment is part of the
+    /// verifying key, so every process building the same system must get the
+    /// same one; a hiding PCS must not salt it from its live generator.
+    fn preprocessing_pcs(&self) -> &Self::Pcs {
+        self.pcs()
+    }
+
     /// 1 when the PCS randomizes commitments (zero-knowledge: every committed
     /// trace is doubled with random rows and a random FRI-batch polynomial is
     /// added), 0 otherwise. Drives domain sizes, quotient chunk counts and the
